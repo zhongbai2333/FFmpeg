@@ -107,7 +107,13 @@ jobs:
       - name: Build
         run: |
           make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
-          make install
+          # Windows ARM64 的 dlltool 不支持 .lib，只复制 DLL
+          if [ "${{ matrix.target }}" = "windows-arm64" ]; then
+            mkdir -p install/bin
+            find . -name "*.dll" -exec cp {} install/bin/ \;
+          else
+            make install
+          fi
         shell: bash
 
       # ── UPX (Windows + Linux only) ──
