@@ -25,7 +25,13 @@ jobs:
           - os: windows-latest
             target: windows-arm64
             upx: true
-            extra-config: "--cross-prefix=aarch64-w64-mingw32- --target-os=mingw32 --arch=aarch64 --enable-cross-compile"
+            extra-config: "--target-os=mingw32 --arch=aarch64 --enable-cross-compile"
+            pre-configure: |
+              export CC="clang --target=aarch64-w64-mingw32"
+              export CXX="clang++ --target=aarch64-w64-mingw32"
+              export LD="lld-link"
+              export AR="llvm-ar"
+              export RANLIB="llvm-ranlib"
 
           # ── Linux ──
           - os: ubuntu-latest
@@ -74,6 +80,7 @@ jobs:
       # ── Configure ──
       - name: Configure FFmpeg
         run: |
+          ${{ matrix.pre-configure }}
           if [ "${{ runner.os }}" = "macOS" ]; then
             export MACOSX_DEPLOYMENT_TARGET=11.0
           fi
