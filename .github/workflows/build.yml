@@ -1,0 +1,162 @@
+name: Build Minimal E-AC-3 FFmpeg
+
+on:
+  push:
+    tags:
+      - "eac3-min-*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # ── Windows ──
+          - os: windows-latest
+            target: windows-x86_64
+            upx: true
+
+          - os: windows-latest
+            target: windows-arm64
+            upx: true
+            extra-config: "--cross-prefix=aarch64-w64-mingw32- --target-os=mingw32 --arch=aarch64 --enable-cross-compile"
+
+          # ── Linux ──
+          - os: ubuntu-latest
+            target: linux-x86_64
+            upx: true
+
+          - os: ubuntu-24.04-arm
+            target: linux-arm64
+            upx: true
+
+          # ── macOS (不要 UPX —— 会破坏代码签名) ──
+          - os: macos-latest
+            target: macos-x86_64
+            upx: false
+            extra-config: "--arch=x86_64"
+
+          - os: macos-latest
+            target: macos-arm64
+            upx: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      # ── Install build tools ──
+      - name: Install tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq nasm upx-ucl
+
+      - name: Install tools (macOS)
+        if: runner.os == 'macOS'
+        run: brew install nasm
+
+      - name: Install tools (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          choco install nasm upx -y --no-progress
+          if [ "${{ matrix.target }}" = "windows-arm64" ]; then
+            choco install llvm --version=18.1.8 -y --no-progress
+          fi
+        shell: bash
+
+      # ── Configure ──
+      - name: Configure FFmpeg
+        run: |
+          if [ "${{ runner.os }}" = "macOS" ]; then
+            export MACOSX_DEPLOYMENT_TARGET=11.0
+          fi
+          ./configure \
+            --disable-everything \
+            --enable-decoder=eac3 \
+            --enable-parser=ac3 \
+            --disable-programs \
+            --disable-doc \
+            --disable-avdevice \
+            --disable-avformat \
+            --disable-swscale \
+            --disable-avfilter \
+            --disable-network \
+            --disable-encoders \
+            --disable-muxers \
+            --disable-protocols \
+            --disable-filters \
+            --enable-small \
+            --disable-debug \
+            --enable-shared \
+            --prefix="$PWD/install" \
+            ${{ matrix.extra-config }}
+        shell: bash
+
+      # ── Build ──
+      - name: Build
+        run: |
+          make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+          make install
+        shell: bash
+
+      # ── UPX (Windows + Linux only) ──
+      - name: UPX compress
+        if: matrix.upx
+        run: |
+          find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
+            echo "Compressing: $f"
+            upx -9 "$f" 2>/dev/null || echo "  (skipped)"
+          done
+        shell: bash
+
+      # ── Show sizes ──
+      - name: Show sizes
+        run: |
+          echo "=== Build artifacts ==="
+          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so*" \) | while read f; do
+            size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+            printf "  %-40s %6d bytes\n" "$(basename "$f")" "$size"
+          done
+        shell: bash
+
+      # ── Package ──
+      - name: Package
+        run: |
+          mkdir -p dist/${{ matrix.target }}
+          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so.*" \) | while read f; do
+            cp "$f" dist/${{ matrix.target }}/
+          done
+          find install -type l -name "*.so" | while read f; do
+            cp -P "$f" dist/${{ matrix.target }}/ 2>/dev/null || true
+          done
+          tar czf ffmpeg-eac3-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
+        shell: bash
+
+      # ── Upload artifacts ──
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-eac3-${{ matrix.target }}
+          path: ffmpeg-eac3-${{ matrix.target }}.tar.gz
+
+  # ── Create release on tag ──
+  release:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: ffmpeg-eac3-*
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**/*.tar.gz
+          fail_on_unmatched_files: true

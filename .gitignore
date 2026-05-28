@@ -52,3 +52,4 @@
 /libavfilter/vulkan/*.c
 /.*/
 !/.forgejo/
+!/.github/
