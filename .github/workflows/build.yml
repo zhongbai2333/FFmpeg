@@ -43,12 +43,10 @@ jobs:
             upx: true
 
           # ── macOS (不要 UPX —— 会破坏代码签名) ──
-          # x86_64 在 Apple Silicon 上交叉编译，必须 --disable-asm
-          # 否则 Clang 无法处理 x86 内联汇编约束（如 "c" 寄存器）
           - os: macos-latest
             target: macos-x86_64
             upx: false
-            extra-config: "--arch=x86_64 --enable-cross-compile --disable-asm"
+            extra-config: "--arch=x86_64 --enable-cross-compile"
 
           - os: macos-latest
             target: macos-arm64
@@ -60,18 +58,16 @@ jobs:
       # ── Install build tools ──
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq nasm upx-ucl
+        run: sudo apt-get install -y -qq upx-ucl
 
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
-        run: brew install nasm
+        run: echo "no extra tools needed"
 
       - name: Install tools (Windows)
         if: runner.os == 'Windows'
         run: |
-          choco install nasm upx -y --no-progress
+          choco install upx -y --no-progress
           if [ "${{ matrix.target }}" = "windows-arm64" ]; then
             choco install llvm -y --no-progress --allow-downgrade 2>/dev/null || echo "LLVM already installed"
           fi
@@ -88,6 +84,7 @@ jobs:
             --disable-everything \
             --enable-decoder=eac3 \
             --enable-parser=ac3 \
+            --disable-asm \
             --disable-programs \
             --disable-doc \
             --disable-avdevice \
