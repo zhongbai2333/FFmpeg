@@ -51,6 +51,10 @@ jobs:
             target: macos-x86_64
             upx: false
             extra-config: "--arch=x86_64 --enable-cross-compile"
+            pre-configure: |
+              export CFLAGS="-arch x86_64"
+              export LDFLAGS="-arch x86_64"
+              export MACOSX_DEPLOYMENT_TARGET=11.0
 
           - os: macos-latest
             target: macos-arm64
@@ -145,7 +149,9 @@ jobs:
               ;;
             windows-arm64)
               JNI_NAME="eac3_jni.dll"
-              clang --target=aarch64-w64-mingw32 -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+              # 交叉编译环境缺目标平台 stdio.h；用 -DJNI_CROSS_COMPILE + 最小桩
+              clang --target=aarch64-w64-mingw32 -shared -DJNI_CROSS_COMPILE \
+                -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
                 -I install/include -L install/bin -lavcodec -lavutil
               ;;
@@ -157,7 +163,7 @@ jobs:
               ;;
             macos-x86_64)
               JNI_NAME="libeac3_jni.dylib"
-              gcc -arch x86_64 -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+              gcc -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
                 -I install/include -L install/lib -lavcodec -lavutil
               ;;
