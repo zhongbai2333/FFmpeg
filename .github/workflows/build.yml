@@ -59,6 +59,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # ── JDK (for JNI headers) ──
+      - uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
       # ── Install build tools ──
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
@@ -121,6 +127,56 @@ jobs:
           fi
         shell: bash
 
+      # ── Build thin JNI wrapper (replaces JavaCPP's 800KB+ JNI DLLs) ──
+      - name: Build JNI wrapper
+        run: |
+          set -e
+          JNI_OUT="install/bin"
+          [ "${{ runner.os }}" != "Windows" ] && JNI_OUT="install/lib"
+          mkdir -p "$JNI_OUT"
+
+          case "${{ matrix.target }}" in
+            windows-x86_64)
+              JNI_NAME="eac3_jni.dll"
+              gcc -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
+                -I install/include -L install/bin -lavcodec -lavutil \
+                -static-libgcc
+              ;;
+            windows-arm64)
+              JNI_NAME="eac3_jni.dll"
+              clang --target=aarch64-w64-mingw32 -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
+                -I install/include -L install/bin -lavcodec -lavutil
+              ;;
+            linux-x86_64|linux-arm64)
+              JNI_NAME="libeac3_jni.so"
+              gcc -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+                -I install/include -L install/lib -lavcodec -lavutil
+              ;;
+            macos-x86_64)
+              JNI_NAME="libeac3_jni.dylib"
+              gcc -arch x86_64 -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                -I install/include -L install/lib -lavcodec -lavutil
+              ;;
+            macos-arm64)
+              JNI_NAME="libeac3_jni.dylib"
+              gcc -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                -I install/include -L install/lib -lavcodec -lavutil
+              ;;
+          esac
+
+          # UPX the JNI wrapper too (Windows/Linux only)
+          if [ "${{ matrix.upx }}" = "true" ]; then
+            upx -9 "$JNI_OUT/$JNI_NAME" 2>/dev/null || echo "  JNI UPX skipped"
+          fi
+
+          printf "  %-40s %6d bytes\n" "$JNI_NAME" $(stat -c%s "$JNI_OUT/$JNI_NAME" 2>/dev/null || stat -f%z "$JNI_OUT/$JNI_NAME" 2>/dev/null)
+        shell: bash
+
       # ── UPX (Windows + Linux only) ──
       - name: UPX compress
         if: matrix.upx
@@ -128,51 +184,6 @@ jobs:
           find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
             echo "Compressing: $f"
             upx -9 "$f" 2>/dev/null || echo "  (skipped)"
-          done
-        shell: bash
-
-      # ── Extract thin JNI wrappers from JavaCPP platform JAR ──
-      # Downloads the platform JAR from Maven Central, extracts ONLY JNI DLLs
-      - name: Fetch JNI wrappers
-        run: |
-          set -e
-          # Map target to JavaCPP platform JAR name
-          case "${{ matrix.target }}" in
-            windows-x86_64)  JAR="ffmpeg-8.0.1-1.5.13-windows-x86_64.jar" ;;
-            windows-arm64)   JAR="ffmpeg-8.0.1-1.5.13-windows-arm64.jar" ;;
-            linux-x86_64)    JAR="ffmpeg-8.0.1-1.5.13-linux-x86_64.jar" ;;
-            linux-arm64)     JAR="ffmpeg-8.0.1-1.5.13-linux-arm64.jar" ;;
-            macos-x86_64)    JAR="ffmpeg-8.0.1-1.5.13-macosx-x86_64.jar" ;;
-            macos-arm64)     JAR="ffmpeg-8.0.1-1.5.13-macosx-arm64.jar" ;;
-            *) echo "Unknown target"; exit 1 ;;
-          esac
-          URL="https://repo1.maven.org/maven2/org/bytedeco/ffmpeg/8.0.1-1.5.13/$JAR"
-          echo "Downloading JNI wrappers from: $URL"
-          curl -sL "$URL" -o platform.jar || wget -q "$URL" -O platform.jar
-
-          # Extract only JNI DLLs (jniavutil, jniavcodec, jniswresample)
-          # Ignore the actual FFmpeg DLLs (we have our own smaller ones)
-          JNI_DIR="install/jni"
-          mkdir -p "$JNI_DIR"
-          unzip -qo platform.jar -d "$JNI_DIR" "*/jniav*" "*/jniavcodec*" "*/jniswresample*" 2>/dev/null || true
-          
-          # Move JNI DLLs to install dir (flatten directory structure)
-          find "$JNI_DIR" -type f \( -name "jni*.dll" -o -name "jni*.so" -o -name "jni*.dylib" \) | while read f; do
-            mv "$f" "install/$(basename "$f")" 2>/dev/null || true
-          done
-          rm -rf "$JNI_DIR" platform.jar
-
-          # UPX JNI DLLs too (Windows/Linux only)
-          if [ "${{ matrix.upx }}" = "true" ]; then
-            find install -type f -name "jni*" | while read f; do
-              upx -9 "$f" 2>/dev/null || echo "  JNI UPX skipped: $(basename "$f")"
-            done
-          fi
-
-          echo "JNI wrappers:"
-          find install -type f \( -name "jni*.dll" -o -name "jni*.so" -o -name "jni*.dylib" \) | while read f; do
-            size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
-            printf "  %-40s %6d bytes\n" "$(basename "$f")" "$size"
           done
         shell: bash
 
@@ -190,7 +201,7 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/${{ matrix.target }}
-          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so.*" -o -name "jni*" \) | while read f; do
+          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so.*" -o -name "*eac3_jni*" \) ! -name "*.h" | while read f; do
             cp "$f" dist/${{ matrix.target }}/
           done
           find install -type l -name "*.so" | while read f; do
