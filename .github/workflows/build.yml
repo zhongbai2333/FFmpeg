@@ -39,10 +39,12 @@ jobs:
           - os: ubuntu-latest
             target: linux-x86_64
             upx: true
+            extra-config: "--extra-cflags=-fvisibility=hidden"
 
           - os: ubuntu-24.04-arm
             target: linux-arm64
             upx: true
+            extra-config: "--extra-cflags=-fvisibility=hidden"
 
           # ── macOS (不要 UPX —— 会破坏代码签名) ──
           - os: macos-latest
@@ -87,7 +89,6 @@ jobs:
             --enable-decoder=eac3 \
             --enable-parser=ac3 \
             --disable-asm \
-            --extra-cflags="-fvisibility=hidden" \
             --disable-programs \
             --disable-doc \
             --disable-avdevice \
