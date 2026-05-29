@@ -32,6 +32,8 @@ jobs:
               export LD="lld-link"
               export AR="llvm-ar"
               export RANLIB="llvm-ranlib"
+              # Clang ARM64 体积优化
+              export CFLAGS="-Os -fno-asynchronous-unwind-tables -fno-unwind-tables"
 
           # ── Linux ──
           - os: ubuntu-latest
