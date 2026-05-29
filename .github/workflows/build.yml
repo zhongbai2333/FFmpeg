@@ -112,7 +112,7 @@ jobs:
           # Windows ARM64 的 dlltool 不支持 .lib，手动复制 DLL + strip
           if [ "${{ matrix.target }}" = "windows-arm64" ]; then
             mkdir -p install/bin
-            find . -name "*.dll" -exec cp {} install/bin/ \;
+            find . \( -name "avcodec-*.dll" -o -name "avutil-*.dll" -o -name "swresample-*.dll" \) ! -name "*.lib" -exec cp {} install/bin/ \;
             llvm-strip install/bin/*.dll 2>/dev/null || strip install/bin/*.dll 2>/dev/null || true
           else
             make install
