@@ -18,36 +18,13 @@
  *       -I install/include -L install/lib -lavcodec -lavutil
  *
  * 交叉编译 (Windows ARM64 via clang, 无 mingw-w64 头):
- *   clang --target=aarch64-w64-mingw32 -shared -DJNI_CROSS_COMPILE \
- *       -o eac3_jni.dll eac3_jni.c \
+ *   clang --target=aarch64-w64-mingw32 -shared \
+ *       -Ijni-stubs \
  *       -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
- *       -I install/include -L install/bin -lavcodec -lavutil
- *   -DJNI_CROSS_COMPILE 提供最小 stdio.h 桩，绕过目标平台头文件缺失。
+ *       -I install/include -L install/bin -lavcodec -lavutil \
+ *       -o eac3_jni.dll eac3_jni.c
+ *   jni-stubs/stdio.h 提供最小桩，绕过目标平台 stdio.h 缺失。
  */
-
-/* ── 交叉编译兼容：为 jni.h 提供最小 stdio.h 桩 ──
- * jni.h 会 #include <stdio.h>，但交叉编译目标 (如 aarch64-w64-mingw32)
- * 可能缺少标准头文件。定义 JNI_CROSS_COMPILE 时，提供 jni.h 所需的最小符号。
- */
-#if defined(JNI_CROSS_COMPILE)
-  /* FILE —— jni.h 需要，但我们不调用任何 FILE* 相关的 JNI 函数 */
-  typedef struct _iobuf FILE;
-
-  #ifndef NULL
-    #define NULL ((void*)0)
-  #endif
-
-  /* va_list —— jni.h 可能需要（用于 JNI 的 varargs 函数，我们不用） */
-  #ifndef _STDARG_H
-    #define _STDARG_H
-    typedef __builtin_va_list va_list;
-  #endif
-
-  /* 阻止 jni.h 真正 include <stdio.h> */
-  #ifndef _STDIO_H_
-    #define _STDIO_H_
-  #endif
-#endif
 
 #include <jni.h>
 #include <stdlib.h>

@@ -149,11 +149,12 @@ jobs:
               ;;
             windows-arm64)
               JNI_NAME="eac3_jni.dll"
-              # 交叉编译环境缺目标平台 stdio.h；用 -DJNI_CROSS_COMPILE + 最小桩
-              clang --target=aarch64-w64-mingw32 -shared -DJNI_CROSS_COMPILE \
-                -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+              # 交叉编译目标缺 stdio.h；用 -Ijni-stubs 提供最小桩
+              clang --target=aarch64-w64-mingw32 -shared \
+                -Ijni-stubs \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
-                -I install/include -L install/bin -lavcodec -lavutil
+                -I install/include -L install/bin -lavcodec -lavutil \
+                -o "$JNI_OUT/$JNI_NAME" eac3_jni.c
               ;;
             linux-x86_64|linux-arm64)
               JNI_NAME="libeac3_jni.so"
