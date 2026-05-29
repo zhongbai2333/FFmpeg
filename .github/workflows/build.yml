@@ -87,6 +87,7 @@ jobs:
             --enable-decoder=eac3 \
             --enable-parser=ac3 \
             --disable-asm \
+            --extra-cflags="-fvisibility=hidden" \
             --disable-programs \
             --disable-doc \
             --disable-avdevice \
