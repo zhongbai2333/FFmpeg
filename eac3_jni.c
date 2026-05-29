@@ -19,16 +19,32 @@
  *
  * 交叉编译 (Windows ARM64 via clang, 无 mingw-w64 头):
  *   clang --target=aarch64-w64-mingw32 -shared \
- *       -Ijni-stubs \
+ *       -DJNI_CROSS_COMPILE -Ijni-stubs \
  *       -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
  *       -I install/include -L install/bin -lavcodec -lavutil \
  *       -o eac3_jni.dll eac3_jni.c
- *   jni-stubs/stdio.h 提供最小桩，绕过目标平台 stdio.h 缺失。
+ *   jni-stubs/*.h 提供最小桩，绕过目标平台 CRT 头缺失。
  */
 
 #include <jni.h>
+
+#ifdef JNI_CROSS_COMPILE
+/*
+ * Windows ARM64 交叉编译时，GitHub Hosted clang 目标侧没有完整 mingw CRT 头。
+ * 不直接包含 stdlib.h/string.h，只声明本文件实际用到的 CRT 符号即可。
+ */
+#ifndef JNI_STUBS_SIZE_T_DEFINED
+#define JNI_STUBS_SIZE_T_DEFINED
+typedef __SIZE_TYPE__ size_t;
+#endif
+void *calloc(size_t count, size_t size);
+void free(void *ptr);
+void *memcpy(void *dest, const void *src, size_t count);
+#else
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
+#endif
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
@@ -94,7 +110,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decoderOpen(
         return 0;
     }
 
-    return (jlong)(intptr_t) h;
+    return (jlong)(size_t) h;
 }
 
 /* ── decode ── */
@@ -104,7 +120,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decode(
         JNIEnv *env, jclass cls, jlong handle,
         jbyteArray data, jint offset, jint length) {
 
-    DecoderHandle *h = (DecoderHandle *)(intptr_t) handle;
+    DecoderHandle *h = (DecoderHandle *)(size_t) handle;
     if (!h || !h->ctx) {
         throwException(env, "解码器句柄无效");
         return NULL;
@@ -123,7 +139,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decode(
         (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
         return NULL;
     }
-    memcpy(h->packet->data, (uint8_t *)(bytes + offset), length);
+    memcpy(h->packet->data, bytes + offset, length);
     (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
 
     /* 发往解码器 */
@@ -178,6 +194,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decode(
         (*env)->DeleteLocalRef(env, channelArray);
     }
 
+    av_frame_unref(h->frame);
     return result;
 }
 
@@ -187,7 +204,7 @@ JNIEXPORT void JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_flush(
         JNIEnv *env, jclass cls, jlong handle) {
 
-    DecoderHandle *h = (DecoderHandle *)(intptr_t) handle;
+    DecoderHandle *h = (DecoderHandle *)(size_t) handle;
     if (h && h->ctx) {
         avcodec_flush_buffers(h->ctx);
     }
@@ -199,7 +216,7 @@ JNIEXPORT void JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_close(
         JNIEnv *env, jclass cls, jlong handle) {
 
-    DecoderHandle *h = (DecoderHandle *)(intptr_t) handle;
+    DecoderHandle *h = (DecoderHandle *)(size_t) handle;
     if (!h) return;
 
     if (h->frame)  av_frame_free(&h->frame);

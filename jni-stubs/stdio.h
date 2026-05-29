@@ -16,6 +16,12 @@
 #ifndef _STDIO_H
 #define _STDIO_H
 #endif
+#ifndef _INC_STDIO
+#define _INC_STDIO
+#endif
+#ifndef STDIO_H
+#define STDIO_H
+#endif
 
 #ifdef __cplusplus
 extern "C" {
