@@ -47,13 +47,15 @@ jobs:
             extra-config: "--extra-cflags=-fvisibility=hidden"
 
           # ── macOS (不要 UPX —— 会破坏代码签名) ──
-          - os: macos-13
+          - os: macos-latest
             target: macos-x86_64
             upx: false
-            extra-config: "--arch=x86_64"
+            extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
             pre-configure: |
-              export CFLAGS="-arch x86_64"
-              export LDFLAGS="-arch x86_64"
+              export CC="clang -arch x86_64"
+              export CXX="clang++ -arch x86_64"
+              export CFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
+              export LDFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
               export MACOSX_DEPLOYMENT_TARGET=11.0
 
           - os: macos-latest
@@ -154,10 +156,15 @@ jobs:
               # 交叉编译目标缺 CRT 头；用 -DJNI_CROSS_COMPILE + -Ijni-stubs 提供最小桩
               AVCODEC_INPUT=$(find install/lib install/bin -type f \( -name "libavcodec*.dll.a" -o -name "avcodec*.lib" -o -name "avcodec-*.dll" \) | head -n 1)
               AVUTIL_INPUT=$(find install/lib install/bin -type f \( -name "libavutil*.dll.a" -o -name "avutil*.lib" -o -name "avutil-*.dll" \) | head -n 1)
+              if [ -z "$AVCODEC_INPUT" ] || [ -z "$AVUTIL_INPUT" ]; then
+                echo "Missing FFmpeg import libraries for windows-arm64"
+                find install -type f | sort
+                exit 1
+              fi
               clang --target=aarch64-w64-mingw32 -shared \
                 -DJNI_CROSS_COMPILE -Ijni-stubs \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
-                -I install/include \
+                -I . -I install/include \
                 -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
                 "$AVCODEC_INPUT" "$AVUTIL_INPUT"
               ;;

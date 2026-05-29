@@ -21,9 +21,9 @@
  *   clang --target=aarch64-w64-mingw32 -shared \
  *       -DJNI_CROSS_COMPILE -Ijni-stubs \
  *       -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
- *       -I install/include -L install/bin -lavcodec -lavutil \
+ *       -I . -I install/include -L install/bin -lavcodec -lavutil \
  *       -o eac3_jni.dll eac3_jni.c
- *   jni-stubs/*.h 提供最小桩，绕过目标平台 CRT 头缺失。
+ *   jni-stubs headers 提供最小桩，绕过目标平台 CRT 头缺失。
  */
 
 #include <jni.h>
