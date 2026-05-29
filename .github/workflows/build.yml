@@ -123,19 +123,12 @@ jobs:
           mkdir -p "$JNI_OUT"
 
           case "${{ matrix.target }}" in
-            windows-x86_64)
+            windows-x86_64|windows-arm64)
               JNI_NAME="eac3_jni.dll"
               gcc -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
                 -I install/include -L install/lib -L install/bin -lavcodec -lavutil \
                 -static-libgcc
-              ;;
-            windows-arm64)
-              JNI_NAME="eac3_jni.dll"
-              clang -shared \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
-                -I install/include -L install/lib -L install/bin -lavcodec -lavutil \
-                -o "$JNI_OUT/$JNI_NAME" eac3_jni.c
               ;;
             linux-x86_64|linux-arm64)
               JNI_NAME="libeac3_jni.so"

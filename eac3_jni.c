@@ -17,12 +17,12 @@
  *       -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
  *       -I install/include -L install/lib -lavcodec -lavutil
  *
- * 原生 (Windows ARM64):
- *   clang -shared \
+ * 原生 (Windows ARM64 via clang MSVC target):
+ *   clang --target=aarch64-pc-windows-msvc -shared -Wno-microsoft-include \
  *       -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
  *       -I install/include -L install/bin -lavcodec -lavutil \
  *       -o eac3_jni.dll eac3_jni.c
- *   原生编译，无交叉编译问题。
+ *   Windows ARM64 自带完整 SDK，CRT 头文件齐全，无交叉编译问题。
  */
 
 #include <jni.h>
