@@ -22,18 +22,9 @@ jobs:
             target: windows-x86_64
             upx: true
 
-          - os: windows-latest
+          - os: windows-11-arm
             target: windows-arm64
             upx: true
-            extra-config: "--target-os=mingw32 --arch=aarch64 --enable-cross-compile"
-            pre-configure: |
-              export CC="clang --target=aarch64-w64-mingw32"
-              export CXX="clang++ --target=aarch64-w64-mingw32"
-              export LD="lld-link"
-              export AR="llvm-ar"
-              export RANLIB="llvm-ranlib"
-              # Clang ARM64 体积优化
-              export CFLAGS="-Os -fno-asynchronous-unwind-tables -fno-unwind-tables"
 
           # ── Linux ──
           - os: ubuntu-latest
@@ -84,9 +75,6 @@ jobs:
         if: runner.os == 'Windows'
         run: |
           choco install upx -y --no-progress
-          if [ "${{ matrix.target }}" = "windows-arm64" ]; then
-            choco install llvm -y --no-progress --allow-downgrade 2>/dev/null || echo "LLVM already installed"
-          fi
         shell: bash
 
       # ── Configure ──
@@ -123,16 +111,7 @@ jobs:
       - name: Build
         run: |
           make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
-          # Windows ARM64 的 dlltool 不支持 .lib，手动复制 DLL + strip
-          if [ "${{ matrix.target }}" = "windows-arm64" ]; then
-            mkdir -p install/bin
-            find . \( -name "avcodec-*.dll" -o -name "avutil-*.dll" -o -name "swresample-*.dll" \) ! -name "*.lib" -exec cp {} install/bin/ \;
-            mkdir -p install/lib
-            find . \( -name "libavcodec*.dll.a" -o -name "libavutil*.dll.a" -o -name "libswresample*.dll.a" -o -name "avcodec*.lib" -o -name "avutil*.lib" -o -name "swresample*.lib" \) -exec cp {} install/lib/ \; 2>/dev/null || true
-            llvm-strip install/bin/*.dll 2>/dev/null || strip install/bin/*.dll 2>/dev/null || true
-          else
-            make install
-          fi
+          make install
         shell: bash
 
       # ── Build thin JNI wrapper (replaces JavaCPP's 800KB+ JNI DLLs) ──
@@ -153,20 +132,10 @@ jobs:
               ;;
             windows-arm64)
               JNI_NAME="eac3_jni.dll"
-              # 交叉编译目标缺 CRT 头；用 -DJNI_CROSS_COMPILE + -Ijni-stubs 提供最小桩
-              AVCODEC_INPUT=$(find install/lib install/bin -type f \( -name "libavcodec*.dll.a" -o -name "avcodec*.lib" -o -name "avcodec-*.dll" \) | head -n 1)
-              AVUTIL_INPUT=$(find install/lib install/bin -type f \( -name "libavutil*.dll.a" -o -name "avutil*.lib" -o -name "avutil-*.dll" \) | head -n 1)
-              if [ -z "$AVCODEC_INPUT" ] || [ -z "$AVUTIL_INPUT" ]; then
-                echo "Missing FFmpeg import libraries for windows-arm64"
-                find install -type f | sort
-                exit 1
-              fi
-              clang --target=aarch64-w64-mingw32 -shared \
-                -DJNI_CROSS_COMPILE -Ijni-stubs \
+              clang -shared \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
-                -I . -I install/include \
-                -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
-                "$AVCODEC_INPUT" "$AVUTIL_INPUT"
+                -I install/include -L install/lib -L install/bin -lavcodec -lavutil \
+                -o "$JNI_OUT/$JNI_NAME" eac3_jni.c
               ;;
             linux-x86_64|linux-arm64)
               JNI_NAME="libeac3_jni.so"

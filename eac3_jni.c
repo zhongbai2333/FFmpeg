@@ -17,34 +17,18 @@
  *       -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
  *       -I install/include -L install/lib -lavcodec -lavutil
  *
- * 交叉编译 (Windows ARM64 via clang, 无 mingw-w64 头):
- *   clang --target=aarch64-w64-mingw32 -shared \
- *       -DJNI_CROSS_COMPILE -Ijni-stubs \
+ * 原生 (Windows ARM64):
+ *   clang -shared \
  *       -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
- *       -I . -I install/include -L install/bin -lavcodec -lavutil \
+ *       -I install/include -L install/bin -lavcodec -lavutil \
  *       -o eac3_jni.dll eac3_jni.c
- *   jni-stubs headers 提供最小桩，绕过目标平台 CRT 头缺失。
+ *   原生编译，无交叉编译问题。
  */
 
 #include <jni.h>
-
-#ifdef JNI_CROSS_COMPILE
-/*
- * Windows ARM64 交叉编译时，GitHub Hosted clang 目标侧没有完整 mingw CRT 头。
- * 不直接包含 stdlib.h/string.h，只声明本文件实际用到的 CRT 符号即可。
- */
-#ifndef JNI_STUBS_SIZE_T_DEFINED
-#define JNI_STUBS_SIZE_T_DEFINED
-typedef __SIZE_TYPE__ size_t;
-#endif
-void *calloc(size_t count, size_t size);
-void free(void *ptr);
-void *memcpy(void *dest, const void *src, size_t count);
-#else
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
-#endif
 
 #include <libavcodec/avcodec.h>
 #include <libavutil/frame.h>
