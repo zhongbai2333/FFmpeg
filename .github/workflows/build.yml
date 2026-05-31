@@ -107,6 +107,31 @@ jobs:
             --enable-shared \
             --prefix="$PWD/install" \
             ${{ matrix.extra-config }}
+          echo "=== Configured threading model ==="
+          grep -E 'THREADS|PTHREAD|W32THREAD' ffbuild/config.mak || true
+        shell: bash
+
+      # ── Force-remove pthread from MinGW toolchain (Windows only) ──
+      - name: Strip pthread linkage (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          set -e
+          echo "=== Before ==="
+          grep -nE 'lwinpthread|lpthread|pthread' ffbuild/config.mak || echo "(none)"
+          # Kill any -lwinpthread / -lpthread from every linker variable
+          sed -i.bak \
+            -e 's/-lwinpthread//g' \
+            -e 's/-lpthread//g' \
+            -e 's/-pthread//g' \
+            ffbuild/config.mak
+          # Kill HAVE_PTHREADS / HAVE_WINPTHREAD so code won't use them
+          sed -i.bak \
+            -e 's/#define HAVE_PTHREADS .*/#define HAVE_PTHREADS 0/' \
+            -e 's/#define HAVE_WINPTHREAD .*/#define HAVE_WINPTHREAD 0/' \
+            -e 's/#define HAVE_PTHREAD_CANCEL .*/#define HAVE_PTHREAD_CANCEL 0/' \
+            config.h || true
+          echo "=== After ==="
+          grep -nE 'lwinpthread|lpthread|HAVE_PTHREAD|HAVE_WINPTHREAD' ffbuild/config.mak config.h || echo "(clean)"
         shell: bash
 
       # ── Build ──
