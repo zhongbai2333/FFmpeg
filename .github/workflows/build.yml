@@ -21,10 +21,12 @@ jobs:
           - os: windows-latest
             target: windows-x86_64
             upx: true
+            extra-config: "--enable-w32threads --disable-pthreads --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
           - os: windows-11-arm
             target: windows-arm64
             upx: true
+            extra-config: "--enable-w32threads --disable-pthreads --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
           # ── Linux ──
           - os: ubuntu-latest
@@ -156,6 +158,94 @@ jobs:
           fi
 
           printf "  %-40s %6d bytes\n" "$JNI_NAME" $(stat -c%s "$JNI_OUT/$JNI_NAME" 2>/dev/null || stat -f%z "$JNI_OUT/$JNI_NAME" 2>/dev/null)
+        shell: bash
+
+      # ── Windows dependency audit ──
+      - name: Audit Windows DLL dependencies
+        if: runner.os == 'Windows'
+        run: |
+          python - <<'PY'
+          import pathlib
+          import struct
+          import sys
+
+          FORBIDDEN = {
+              "libwinpthread-1.dll",
+              "libgcc_s_seh-1.dll",
+              "libgcc_s_dw2-1.dll",
+              "libstdc++-6.dll",
+          }
+
+          def rva_to_off(sections, rva):
+              for va, vsz, raw, rawsz in sections:
+                  if va <= rva < va + max(vsz, rawsz):
+                      return raw + (rva - va)
+              return None
+
+          def imports(path):
+              data = path.read_bytes()
+              if data[:2] != b"MZ":
+                  return []
+              pe = struct.unpack_from("<I", data, 0x3C)[0]
+              if data[pe:pe + 4] != b"PE\0\0":
+                  return []
+              coff = pe + 4
+              _, sections_count, _, _, _, opt_size, _ = struct.unpack_from("<HHIIIHH", data, coff)
+              opt = coff + 20
+              magic = struct.unpack_from("<H", data, opt)[0]
+              if magic == 0x20B:
+                  data_dirs = opt + 112
+              elif magic == 0x10B:
+                  data_dirs = opt + 96
+              else:
+                  return []
+              import_rva, _ = struct.unpack_from("<II", data, data_dirs + 8)
+              if import_rva == 0:
+                  return []
+
+              section_table = opt + opt_size
+              sections = []
+              for i in range(sections_count):
+                  header = section_table + i * 40
+                  vsz, va, rawsz, raw = struct.unpack_from("<IIII", data, header + 8)
+                  sections.append((va, vsz, raw, rawsz))
+
+              import_off = rva_to_off(sections, import_rva)
+              if import_off is None:
+                  return []
+
+              result = []
+              for i in range(512):
+                  desc = import_off + i * 20
+                  if desc + 20 > len(data):
+                      break
+                  values = struct.unpack_from("<IIIII", data, desc)
+                  if values == (0, 0, 0, 0, 0):
+                      break
+                  name_off = rva_to_off(sections, values[3])
+                  if name_off is None:
+                      continue
+                  end = data.find(b"\0", name_off)
+                  if end > name_off:
+                      result.append(data[name_off:end].decode("ascii", "replace"))
+              return result
+
+          bad = []
+          for dll in sorted(pathlib.Path("install").rglob("*.dll")):
+              imported = imports(dll)
+              print(f"{dll}:")
+              for name in imported:
+                  print(f"  {name}")
+              forbidden = sorted(name for name in imported if name.lower() in FORBIDDEN)
+              if forbidden:
+                  bad.append((dll, forbidden))
+
+          if bad:
+              print("::error::Forbidden MinGW runtime dependencies found:")
+              for dll, deps in bad:
+                  print(f"  {dll}: {', '.join(deps)}")
+              sys.exit(1)
+          PY
         shell: bash
 
       # ── UPX (Windows + Linux only) ──
