@@ -185,6 +185,45 @@ jobs:
           printf "  %-40s %6d bytes\n" "$JNI_NAME" $(stat -c%s "$JNI_OUT/$JNI_NAME" 2>/dev/null || stat -f%z "$JNI_OUT/$JNI_NAME" 2>/dev/null)
         shell: bash
 
+      # ── Bundle Windows runtime dependencies ──
+      - name: Bundle Windows runtime dependencies
+        if: runner.os == 'Windows'
+        run: |
+          set -e
+          mkdir -p install/bin
+
+          find_dll() {
+            name="$1"
+            candidate="$(where.exe "$name" 2>/dev/null | tr -d '\r' | head -n 1 || true)"
+            if [ -n "$candidate" ]; then
+              candidate="$(cygpath -u "$candidate" 2>/dev/null || echo "$candidate")"
+              if [ -f "$candidate" ]; then
+                echo "$candidate"
+                return 0
+              fi
+            fi
+
+            for root in /mingw64 /ucrt64 /clang64 /clangarm64 /usr /c/ProgramData/chocolatey/lib; do
+              [ -d "$root" ] || continue
+              candidate="$(find "$root" -type f -iname "$name" 2>/dev/null | head -n 1 || true)"
+              if [ -n "$candidate" ]; then
+                echo "$candidate"
+                return 0
+              fi
+            done
+            return 1
+          }
+
+          dep="$(find_dll libwinpthread-1.dll || true)"
+          if [ -z "$dep" ]; then
+            echo "::error::avutil imports libwinpthread-1.dll, but the matching runtime DLL was not found in PATH/toolchain."
+            exit 1
+          fi
+
+          cp "$dep" install/bin/libwinpthread-1.dll
+          echo "Bundled libwinpthread-1.dll from: $dep"
+        shell: bash
+
       # ── Windows dependency audit ──
       - name: Audit Windows DLL dependencies
         if: runner.os == 'Windows'
@@ -195,10 +234,12 @@ jobs:
           import sys
 
           FORBIDDEN = {
-              "libwinpthread-1.dll",
               "libgcc_s_seh-1.dll",
               "libgcc_s_dw2-1.dll",
               "libstdc++-6.dll",
+          }
+          BUNDLED = {
+              "libwinpthread-1.dll",
           }
 
           def rva_to_off(sections, rva):
@@ -255,7 +296,9 @@ jobs:
                       result.append(data[name_off:end].decode("ascii", "replace"))
               return result
 
+          bundled_present = {p.name.lower() for p in pathlib.Path("install").rglob("*.dll")}
           bad = []
+          missing_bundled = []
           for dll in sorted(pathlib.Path("install").rglob("*.dll")):
               imported = imports(dll)
               print(f"{dll}:")
@@ -264,12 +307,28 @@ jobs:
               forbidden = sorted(name for name in imported if name.lower() in FORBIDDEN)
               if forbidden:
                   bad.append((dll, forbidden))
+              for name in imported:
+                  lowered = name.lower()
+                  if lowered in BUNDLED and lowered not in bundled_present:
+                      missing_bundled.append((dll, name))
 
-          if bad:
-              print("::error::Forbidden MinGW runtime dependencies found:")
-              for dll, deps in bad:
-                  print(f"  {dll}: {', '.join(deps)}")
+          if bad or missing_bundled:
+              if bad:
+                  print("::error::Forbidden MinGW runtime dependencies found:")
+                  for dll, deps in bad:
+                      print(f"  {dll}: {', '.join(deps)}")
+              if missing_bundled:
+                  print("::error::Bundled runtime dependencies are imported but missing from install output:")
+                  for dll, dep in missing_bundled:
+                      print(f"  {dll}: {dep}")
               sys.exit(1)
+
+          if BUNDLED & bundled_present:
+              print("Bundled runtime dependencies:")
+              for name in sorted(BUNDLED & bundled_present):
+                  print(f"  {name}")
+          else:
+              print("No bundled Windows runtime dependencies required.")
           PY
         shell: bash
 
@@ -278,6 +337,12 @@ jobs:
         if: matrix.upx
         run: |
           find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
+            case "$(basename "$f")" in
+              libwinpthread-1.dll)
+                echo "Skipping runtime DLL: $f"
+                continue
+                ;;
+            esac
             echo "Compressing: $f"
             upx -9 "$f" 2>/dev/null || echo "  (skipped)"
           done
