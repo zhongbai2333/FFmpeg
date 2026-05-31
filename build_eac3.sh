@@ -24,7 +24,7 @@ echo "=== FFmpeg minimal E-AC-3 build ==="
     --disable-debug \
     --enable-shared \
     --extra-ldflags="-static-libgcc -static-libstdc++" \
-    --extra-libs="-Wl,-Bstatic -lwinpthread -Wl,-Bdynamic" \
+    --extra-ldsoflags="-Wl,-Bstatic -lwinpthread -Wl,-Bdynamic" \
     --prefix="$PWD/install"
 
 make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
