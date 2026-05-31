@@ -24,10 +24,11 @@ echo "=== FFmpeg minimal E-AC-3 build ==="
     --disable-debug \
     --enable-shared \
     --extra-ldflags="-static-libgcc -static-libstdc++" \
-    --extra-ldsoflags="-Wl,-Bstatic -lwinpthread -Wl,-Bdynamic" \
     --prefix="$PWD/install"
 
-make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
+# 暴力追加：把 winpthread 静态链接到所有 .dll/.so
+make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)" \
+    SHFLAGS="-shared -static-libgcc -static-libstdc++ -Wl,-Bstatic -lwinpthread -Wl,-Bdynamic"
 make install
 
 # Windows / Linux: UPX 压缩
