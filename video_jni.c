@@ -16,6 +16,7 @@
 #include <libavutil/frame.h>
 #include <libavutil/avutil.h>
 #include <libavutil/error.h>
+#include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
 #include <libswscale/swscale.h>
 
@@ -25,13 +26,18 @@ typedef struct {
     AVCodecContext *codec_ctx;
     AVPacket       *packet;
     AVFrame        *decode_frame;
+    AVFrame        *transfer_frame;
     AVFrame        *rgb_frame;
+    AVBufferRef    *hw_device_ctx;
     struct SwsContext *sws_ctx;
+    enum AVPixelFormat hw_pix_fmt;
+    enum AVHWDeviceType hw_device_type;
     int             sws_src_w, sws_src_h, sws_dst_w, sws_dst_h;
     int             target_width;
     int             target_height;
     int             original_width;
     int             original_height;
+    int             use_hwaccel;
 } VideoDecoderHandle;
 
 /* ── 辅助：抛 Java 异常 ── */
@@ -41,7 +47,59 @@ static void throwException(JNIEnv *env, const char *msg) {
     if (cls) (*env)->ThrowNew(env, cls, msg);
 }
 
-static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, jint target_height) {
+static enum AVPixelFormat getHwFormat(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *) ctx->opaque;
+    if (!h) {
+        return pix_fmts[0];
+    }
+    for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
+        if (*p == h->hw_pix_fmt) {
+            return *p;
+        }
+    }
+    return pix_fmts[0];
+}
+
+static enum AVHWDeviceType requestedDeviceType(const char *name) {
+    if (!name || !name[0] || strcmp(name, "auto") == 0) {
+        return AV_HWDEVICE_TYPE_NONE;
+    }
+    return av_hwdevice_find_type_by_name(name);
+}
+
+static int tryEnableHwaccel(const AVCodec *codec, AVCodecContext *ctx, VideoDecoderHandle *h,
+        enum AVHWDeviceType requested) {
+    for (int i = 0;; i++) {
+        const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
+        if (!config) {
+            break;
+        }
+        if (!(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+            continue;
+        }
+        if (requested != AV_HWDEVICE_TYPE_NONE && config->device_type != requested) {
+            continue;
+        }
+
+        AVBufferRef *device = NULL;
+        if (av_hwdevice_ctx_create(&device, config->device_type, NULL, NULL, 0) < 0) {
+            continue;
+        }
+
+        h->hw_device_ctx = device;
+        h->hw_pix_fmt = config->pix_fmt;
+        h->hw_device_type = config->device_type;
+        h->use_hwaccel = 1;
+        ctx->hw_device_ctx = av_buffer_ref(device);
+        ctx->get_format = getHwFormat;
+        ctx->opaque = h;
+        return 1;
+    }
+    return 0;
+}
+
+static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, jint target_height,
+        const char *hwaccel_name) {
     enum AVCodecID av_codec_id;
     switch (codec_id) {
         case 12:
@@ -61,39 +119,56 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
         return 0;
     }
 
-    AVCodecContext *ctx = avcodec_alloc_context3(codec);
-    if (!ctx) {
-        throwException(env, "分配 AVCodecContext 失败");
-        return 0;
-    }
-
-    if (avcodec_open2(ctx, codec, NULL) < 0) {
-        avcodec_free_context(&ctx);
-        throwException(env, "avcodec_open2 失败");
-        return 0;
-    }
-
     VideoDecoderHandle *h = (VideoDecoderHandle *) calloc(1, sizeof(VideoDecoderHandle));
     if (!h) {
-        avcodec_free_context(&ctx);
         throwException(env, "分配 VideoDecoderHandle 失败");
+        return 0;
+    }
+
+    AVCodecContext *ctx = avcodec_alloc_context3(codec);
+    if (!ctx) {
+        free(h);
+        throwException(env, "分配 AVCodecContext 失败");
         return 0;
     }
 
     h->codec_ctx     = ctx;
     h->packet        = av_packet_alloc();
     h->decode_frame  = av_frame_alloc();
+    h->transfer_frame = av_frame_alloc();
     h->rgb_frame     = av_frame_alloc();
     h->target_width  = target_width;
     h->target_height = target_height;
+    h->hw_pix_fmt = AV_PIX_FMT_NONE;
+    h->hw_device_type = AV_HWDEVICE_TYPE_NONE;
 
-    if (!h->packet || !h->decode_frame || !h->rgb_frame) {
+    if (!h->packet || !h->decode_frame || !h->transfer_frame || !h->rgb_frame) {
         av_packet_free(&h->packet);
         av_frame_free(&h->decode_frame);
+        av_frame_free(&h->transfer_frame);
         av_frame_free(&h->rgb_frame);
         avcodec_free_context(&h->codec_ctx);
         free(h);
         throwException(env, "分配 packet/frame 失败");
+        return 0;
+    }
+
+    enum AVHWDeviceType requested = requestedDeviceType(hwaccel_name);
+    if (hwaccel_name && hwaccel_name[0]
+            && strcmp(hwaccel_name, "none") != 0
+            && strcmp(hwaccel_name, "off") != 0) {
+        tryEnableHwaccel(codec, ctx, h, requested);
+    }
+
+    if (avcodec_open2(ctx, codec, NULL) < 0) {
+        if (h->hw_device_ctx) av_buffer_unref(&h->hw_device_ctx);
+        av_packet_free(&h->packet);
+        av_frame_free(&h->decode_frame);
+        av_frame_free(&h->transfer_frame);
+        av_frame_free(&h->rgb_frame);
+        avcodec_free_context(&h->codec_ctx);
+        free(h);
+        throwException(env, "avcodec_open2 失败");
         return 0;
     }
 
@@ -105,7 +180,7 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpen(
         JNIEnv *env, jclass cls, jint target_width, jint target_height) {
-    return decoderOpenForCodec(env, 7, target_width, target_height);
+    return decoderOpenForCodec(env, 7, target_width, target_height, "none");
 }
 
 /* ── decoderOpenForCodec: 预留给后续 Java 侧按 B站 codecid 选择 H.264/HEVC ── */
@@ -113,7 +188,18 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpen
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpenForCodec(
         JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height) {
-    return decoderOpenForCodec(env, codec_id, target_width, target_height);
+    return decoderOpenForCodec(env, codec_id, target_width, target_height, "none");
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpenForCodecWithHwaccel(
+        JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height, jstring hwaccel) {
+    const char *hw = hwaccel ? (*env)->GetStringUTFChars(env, hwaccel, NULL) : NULL;
+    jlong handle = decoderOpenForCodec(env, codec_id, target_width, target_height, hw ? hw : "auto");
+    if (hw) {
+        (*env)->ReleaseStringUTFChars(env, hwaccel, hw);
+    }
+    return handle;
 }
 
 /* ── getVideoFrame ── */
@@ -136,8 +222,18 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFra
         return NULL;
     }
 
-    int src_w = h->decode_frame->width;
-    int src_h = h->decode_frame->height;
+    AVFrame *frame = h->decode_frame;
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+        av_frame_unref(h->transfer_frame);
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+            av_frame_unref(h->decode_frame);
+            return NULL;
+        }
+        frame = h->transfer_frame;
+    }
+
+    int src_w = frame->width;
+    int src_h = frame->height;
 
     if (src_w <= 0 || src_h <= 0) {
         av_frame_unref(h->decode_frame);
@@ -158,7 +254,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFra
             sws_freeContext(h->sws_ctx);
         }
         h->sws_ctx = sws_getContext(
-                src_w, src_h, h->decode_frame->format,
+            src_w, src_h, frame->format,
                 dst_w, dst_h, AV_PIX_FMT_RGBA,
                 SWS_BILINEAR, NULL, NULL, NULL);
         h->sws_src_w = src_w;
@@ -186,8 +282,8 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFra
     }
 
     sws_scale(h->sws_ctx,
-              (const uint8_t * const *) h->decode_frame->data,
-              h->decode_frame->linesize,
+              (const uint8_t * const *) frame->data,
+              frame->linesize,
               0, src_h,
               h->rgb_frame->data,
               h->rgb_frame->linesize);
@@ -215,6 +311,9 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFra
 
     (*env)->ReleaseByteArrayElements(env, result, dst, 0);
 
+    if (frame == h->transfer_frame) {
+        av_frame_unref(h->transfer_frame);
+    }
     av_frame_unref(h->decode_frame);
     return result;
 }
@@ -277,8 +376,10 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_close(
 
     if (h->sws_ctx)      sws_freeContext(h->sws_ctx);
     if (h->rgb_frame)    av_frame_free(&h->rgb_frame);
+    if (h->transfer_frame) av_frame_free(&h->transfer_frame);
     if (h->decode_frame) av_frame_free(&h->decode_frame);
     if (h->packet)       av_packet_free(&h->packet);
+    if (h->hw_device_ctx) av_buffer_unref(&h->hw_device_ctx);
     if (h->codec_ctx)    avcodec_free_context(&h->codec_ctx);
     free(h);
 }
