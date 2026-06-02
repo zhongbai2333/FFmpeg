@@ -18,18 +18,6 @@ on:
         required: true
         default: true
         type: boolean
-  push:
-    paths:
-      - ".github/workflows/probe-native-size.yml"
-      - ".github/scripts/build-size-variant.sh"
-      - "build_media.sh"
-      - "build_eac3.sh"
-      - "configure"
-      - "libavcodec/**"
-      - "libavutil/**"
-      - "libswresample/**"
-      - "libswscale/**"
-      - "ffbuild/**"
 
 permissions:
   contents: read

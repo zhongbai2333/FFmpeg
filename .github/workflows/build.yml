@@ -1,8 +1,9 @@
-name: Build Minimal E-AC-3 FFmpeg
+name: Build Minimal Media FFmpeg
 
 on:
   push:
     tags:
+      - "media-min-*"
       - "eac3-min-*"
   workflow_dispatch:
 
@@ -67,7 +68,9 @@ jobs:
       # ── Install build tools ──
       - name: Install tools (Linux)
         if: runner.os == 'Linux'
-        run: sudo apt-get install -y -qq upx-ucl
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq make gcc pkg-config upx-ucl
 
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
@@ -89,13 +92,19 @@ jobs:
           ./configure \
             --disable-everything \
             --enable-decoder=eac3 \
+            --enable-decoder=h264 \
+            --enable-decoder=hevc \
             --enable-parser=ac3 \
+            --enable-parser=h264 \
+            --enable-parser=hevc \
+            --enable-bsf=h264_mp4toannexb \
+            --enable-bsf=hevc_mp4toannexb \
+            --enable-swscale \
             --disable-asm \
             --disable-programs \
             --disable-doc \
             --disable-avdevice \
             --disable-avformat \
-            --disable-swscale \
             --disable-avfilter \
             --disable-network \
             --disable-encoders \
@@ -109,6 +118,8 @@ jobs:
             ${{ matrix.extra-config }}
           echo "=== Configured threading model ==="
           grep -E 'THREADS|PTHREAD|W32THREAD' ffbuild/config.mak || true
+          echo "=== Enabled decoders/parsers/bsfs ==="
+          grep -E 'CONFIG_(EAC3|H264|HEVC|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE)' config.h || true
         shell: bash
 
       # ── Force-remove pthread from MinGW toolchain (Windows only) ──
@@ -118,13 +129,11 @@ jobs:
           set -e
           echo "=== Before ==="
           grep -nE 'lwinpthread|lpthread|pthread' ffbuild/config.mak || echo "(none)"
-          # Kill any -lwinpthread / -lpthread from every linker variable
           sed -i.bak \
             -e 's/-lwinpthread//g' \
             -e 's/-lpthread//g' \
             -e 's/-pthread//g' \
             ffbuild/config.mak
-          # Kill HAVE_PTHREADS / HAVE_WINPTHREAD so code won't use them
           sed -i.bak \
             -e 's/#define HAVE_PTHREADS .*/#define HAVE_PTHREADS 0/' \
             -e 's/#define HAVE_WINPTHREAD .*/#define HAVE_WINPTHREAD 0/' \
@@ -141,8 +150,8 @@ jobs:
           make install
         shell: bash
 
-      # ── Build thin JNI wrapper (replaces JavaCPP's 800KB+ JNI DLLs) ──
-      - name: Build JNI wrapper
+      # ── Build thin JNI wrappers ──
+      - name: Build JNI wrappers
         run: |
           set -e
           JNI_OUT="install/bin"
@@ -151,38 +160,50 @@ jobs:
 
           case "${{ matrix.target }}" in
             windows-x86_64|windows-arm64)
-              JNI_NAME="eac3_jni.dll"
-              gcc -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+              gcc -shared -o "$JNI_OUT/eac3_jni.dll" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
                 -I install/include -L install/lib -L install/bin -lavcodec -lavutil \
                 -static-libgcc
+              gcc -shared -o "$JNI_OUT/video_jni.dll" video_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
+                -I install/include -L install/lib -L install/bin -lavcodec -lswscale -lavutil \
+                -static-libgcc
               ;;
             linux-x86_64|linux-arm64)
-              JNI_NAME="libeac3_jni.so"
-              gcc -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+              gcc -shared -o "$JNI_OUT/libeac3_jni.so" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
                 -I install/include -L install/lib -lavcodec -lavutil
+              gcc -shared -o "$JNI_OUT/libvideo_jni.so" video_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+                -I install/include -L install/lib -lavcodec -lswscale -lavutil
               ;;
             macos-x86_64)
-              JNI_NAME="libeac3_jni.dylib"
-              gcc -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+              gcc -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
                 -I install/include -L install/lib -lavcodec -lavutil
+              gcc -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                -I install/include -L install/lib -lavcodec -lswscale -lavutil
               ;;
             macos-arm64)
-              JNI_NAME="libeac3_jni.dylib"
-              gcc -shared -o "$JNI_OUT/$JNI_NAME" eac3_jni.c \
+              gcc -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
                 -I install/include -L install/lib -lavcodec -lavutil
+              gcc -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
+                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                -I install/include -L install/lib -lavcodec -lswscale -lavutil
               ;;
           esac
 
-          # UPX the JNI wrapper too (Windows/Linux only)
           if [ "${{ matrix.upx }}" = "true" ]; then
-            upx -9 "$JNI_OUT/$JNI_NAME" 2>/dev/null || echo "  JNI UPX skipped"
+            find "$JNI_OUT" -type f \( -name "*.dll" -o -name "*.so" \) | while read f; do
+              upx -9 "$f" 2>/dev/null || echo "  JNI UPX skipped: $f"
+            done
           fi
 
-          printf "  %-40s %6d bytes\n" "$JNI_NAME" $(stat -c%s "$JNI_OUT/$JNI_NAME" 2>/dev/null || stat -f%z "$JNI_OUT/$JNI_NAME" 2>/dev/null)
+          find "$JNI_OUT" -type f \( -name "*eac3_jni*" -o -name "*video_jni*" \) | while read f; do
+            printf "  %-40s %6d bytes\n" "$(basename "$f")" $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+          done
         shell: bash
 
       # ── Bundle Windows runtime dependencies ──
@@ -215,13 +236,12 @@ jobs:
           }
 
           dep="$(find_dll libwinpthread-1.dll || true)"
-          if [ -z "$dep" ]; then
-            echo "::error::avutil imports libwinpthread-1.dll, but the matching runtime DLL was not found in PATH/toolchain."
-            exit 1
+          if [ -n "$dep" ]; then
+            cp "$dep" install/bin/libwinpthread-1.dll
+            echo "Bundled libwinpthread-1.dll from: $dep"
+          else
+            echo "No libwinpthread-1.dll found/needed."
           fi
-
-          cp "$dep" install/bin/libwinpthread-1.dll
-          echo "Bundled libwinpthread-1.dll from: $dep"
         shell: bash
 
       # ── Windows dependency audit ──
@@ -362,21 +382,21 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/${{ matrix.target }}
-          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so.*" -o -name "*eac3_jni*" \) ! -name "*.h" | while read f; do
+          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so" -o -name "*.so.*" -o -name "*eac3_jni*" -o -name "*video_jni*" \) ! -name "*.h" | while read f; do
             cp "$f" dist/${{ matrix.target }}/
           done
           find install -type l -name "*.so" | while read f; do
             cp -P "$f" dist/${{ matrix.target }}/ 2>/dev/null || true
           done
-          tar czf ffmpeg-eac3-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
+          tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
         shell: bash
 
       # ── Upload artifacts ──
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ffmpeg-eac3-${{ matrix.target }}
-          path: ffmpeg-eac3-${{ matrix.target }}.tar.gz
+          name: ffmpeg-media-${{ matrix.target }}
+          path: ffmpeg-media-${{ matrix.target }}.tar.gz
 
   # ── Create release on tag ──
   release:
@@ -386,7 +406,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: ffmpeg-eac3-*
+          pattern: ffmpeg-media-*
           path: artifacts
 
       - name: Create Release

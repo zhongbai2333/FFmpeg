@@ -1,20 +1,24 @@
 #!/bin/bash
-# 构建最小 FFmpeg + JNI: E-AC-3 音频 + H.264 视频
+# 构建最小 FFmpeg + JNI: E-AC-3 音频 + H.264/HEVC 视频
 # 需要: gcc/clang, make, nasm, upx (可选), JDK
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$SCRIPT_DIR/ffmpeg_install"
 
-echo "=== FFmpeg minimal media build (E-AC-3 + H.264) ==="
+echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + HEVC) ==="
 
 # ── 1. 构建 FFmpeg ──
 ./configure \
     --disable-everything \
     --enable-decoder=eac3 \
     --enable-decoder=h264 \
+    --enable-decoder=hevc \
     --enable-parser=ac3 \
     --enable-parser=h264 \
+    --enable-parser=hevc \
+    --enable-bsf=h264_mp4toannexb \
+    --enable-bsf=hevc_mp4toannexb \
     --enable-swscale \
     --disable-programs \
     --disable-doc \
@@ -79,15 +83,15 @@ LIBS_VIDEO="$LIBS -lswscale"
 
 case "$OSTYPE" in
     darwin*)
-        gcc -shared -o "$INSTALL_DIR/bin/libvideo_jni.dylib" "$SCRIPT_DIR/../NetMusicCanPlayBili/bench/video_jni.c" \
+        gcc -shared -o "$INSTALL_DIR/bin/libvideo_jni.dylib" "$SCRIPT_DIR/video_jni.c" \
             $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS_VIDEO $EXTRA_FLAGS
         ;;
     linux*)
-        gcc -shared -o "$INSTALL_DIR/lib/libvideo_jni.so" "$SCRIPT_DIR/../NetMusicCanPlayBili/bench/video_jni.c" \
+        gcc -shared -o "$INSTALL_DIR/lib/libvideo_jni.so" "$SCRIPT_DIR/video_jni.c" \
             $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS_VIDEO $EXTRA_FLAGS
         ;;
     msys*|cygwin*|win32)
-        gcc -shared -o "$INSTALL_DIR/bin/video_jni.dll" "$SCRIPT_DIR/../NetMusicCanPlayBili/bench/video_jni.c" \
+        gcc -shared -o "$INSTALL_DIR/bin/video_jni.dll" "$SCRIPT_DIR/video_jni.c" \
             $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS_VIDEO \
             -Wl,--out-implib,libvideo_jni.dll.a $EXTRA_FLAGS
         ;;
@@ -109,7 +113,7 @@ case "$OSTYPE" in
         ;;
     msys*|cygwin*|win32)
         LIB_DIR="$INSTALL_DIR/bin"
-        LIBS_LIST=("avutil-62" "swresample-6" "swscale-9" "avcodec-62" "eac3_jni" "video_jni")
+        LIBS_LIST=("avutil-60" "swresample-6" "swscale-9" "avcodec-62" "eac3_jni" "video_jni")
         EXT=".dll"
         ;;
 esac
