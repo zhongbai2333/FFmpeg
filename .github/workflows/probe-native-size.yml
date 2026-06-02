@@ -1,0 +1,171 @@
+name: Probe FFmpeg Native Size
+
+on:
+  workflow_dispatch:
+    inputs:
+      variant:
+        description: "Variant to build"
+        required: true
+        default: "all"
+        type: choice
+        options:
+          - all
+          - eac3
+          - h264
+          - hevc
+      upx:
+        description: "Compress Windows/Linux outputs with UPX"
+        required: true
+        default: true
+        type: boolean
+  push:
+    paths:
+      - ".github/workflows/probe-native-size.yml"
+      - ".github/scripts/build-size-variant.sh"
+      - "build_media.sh"
+      - "build_eac3.sh"
+      - "configure"
+      - "libavcodec/**"
+      - "libavutil/**"
+      - "libswresample/**"
+      - "libswscale/**"
+      - "ffbuild/**"
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: windows-x86_64
+            os: windows-latest
+            extra-config: "--disable-asm --enable-w32threads --disable-pthreads --extra-ldflags=-static-libgcc"
+            shell: msys2 {0}
+          - target: linux-x86_64
+            os: ubuntu-latest
+            extra-config: "--disable-asm --extra-cflags=-fvisibility=hidden"
+            shell: bash
+          - target: macos-arm64
+            os: macos-latest
+            extra-config: "--disable-asm"
+            shell: bash
+          - target: macos-x86_64
+            os: macos-latest
+            extra-config: "--disable-asm --arch=x86_64 --target-os=darwin --enable-cross-compile"
+            pre-configure: |
+              export CC="clang -arch x86_64"
+              export CXX="clang++ -arch x86_64"
+              export CFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
+              export LDFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
+              export MACOSX_DEPLOYMENT_TARGET=11.0
+            shell: bash
+
+    defaults:
+      run:
+        shell: ${{ matrix.shell }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install build tools (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -y -qq
+          sudo apt-get install -y -qq make gcc pkg-config
+          if [ "${{ inputs.upx || true }}" = "true" ]; then
+            sudo apt-get install -y -qq upx-ucl || true
+          fi
+
+      - name: Install build tools (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          xcodebuild -version
+          clang --version
+
+      - name: Install build tools (Windows)
+        if: runner.os == 'Windows'
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            make
+            python
+            mingw-w64-ucrt-x86_64-gcc
+            mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-pkgconf
+            mingw-w64-ucrt-x86_64-upx
+
+      - name: Select variants
+        id: variants
+        run: |
+          case "${{ inputs.variant || 'all' }}" in
+            all) echo "list=eac3 h264 hevc" >> "$GITHUB_OUTPUT" ;;
+            eac3) echo "list=eac3" >> "$GITHUB_OUTPUT" ;;
+            h264) echo "list=h264" >> "$GITHUB_OUTPUT" ;;
+            hevc) echo "list=hevc" >> "$GITHUB_OUTPUT" ;;
+          esac
+
+      - name: Build size variants
+        run: |
+          set -euo pipefail
+          ${{ matrix.pre-configure }}
+          mkdir -p dist/${{ matrix.target }} reports
+          for variant in ${{ steps.variants.outputs.list }}; do
+            echo "::group::Build $variant"
+            make distclean >/dev/null 2>&1 || true
+            export EXTRA_CONFIG="${{ matrix.extra-config }}"
+            export UPX="${{ inputs.upx || true }}"
+            bash .github/scripts/build-size-variant.sh \
+              "$variant" \
+              "$PWD/install-$variant" \
+              "$PWD/reports/${{ matrix.target }}-$variant.txt"
+            tar czf "dist/${{ matrix.target }}/ffmpeg-size-${{ matrix.target }}-$variant.tar.gz" \
+              "install-$variant" \
+              "reports/${{ matrix.target }}-$variant.txt"
+            echo "::endgroup::"
+          done
+
+      - name: Summarize size delta
+        run: |
+          python3 - <<'PY'
+          import pathlib
+          import re
+
+          reports = sorted(pathlib.Path("reports").glob("*.txt"))
+          rows = []
+          for report in reports:
+              text = report.read_text(encoding="utf-8", errors="replace")
+              variant = re.search(r"^variant=(.+)$", text, re.M).group(1)
+              total = int(re.search(r"^total_bytes=(\d+)$", text, re.M).group(1))
+              rows.append((variant, total, report.name))
+
+          base = next((total for variant, total, _ in rows if variant == "eac3"), None)
+          print("| Variant | Native total | Delta vs eac3 | Report |")
+          print("|---|---:|---:|---|")
+          summary = ["| Variant | Native total | Delta vs eac3 | Report |", "|---|---:|---:|---|"]
+          for variant, total, name in rows:
+              delta = total - base if base is not None else 0
+              line = f"| {variant} | {total / 1024 / 1024:.3f} MiB | {delta / 1024 / 1024:+.3f} MiB | `{name}` |"
+              print(line)
+              summary.append(line)
+          pathlib.Path("reports/summary.md").write_text("\n".join(summary) + "\n", encoding="utf-8")
+          PY
+          cat reports/summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload reports
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-native-size-reports-${{ matrix.target }}
+          path: reports/*
+
+      - name: Upload built native archives
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-native-size-builds-${{ matrix.target }}
+          path: dist/${{ matrix.target }}/*.tar.gz
