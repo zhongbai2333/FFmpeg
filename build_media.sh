@@ -43,6 +43,7 @@ esac
     --enable-decoder=eac3 \
     --enable-decoder=h264 \
     --enable-decoder=hevc \
+    --enable-itut_t35 \
     --enable-parser=ac3 \
     --enable-parser=h264 \
     --enable-parser=hevc \
