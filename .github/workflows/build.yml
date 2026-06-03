@@ -22,29 +22,29 @@ jobs:
           - os: windows-latest
             target: windows-x86_64
             upx: true
-            extra-config: "--enable-w32threads --disable-pthreads --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
+            extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=hevc_d3d11va --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
           - os: windows-11-arm
             target: windows-arm64
             upx: true
-            extra-config: "--enable-w32threads --disable-pthreads --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
+            extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=hevc_d3d11va --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
           # ── Linux ──
           - os: ubuntu-latest
             target: linux-x86_64
             upx: true
-            extra-config: "--extra-cflags=-fvisibility=hidden"
+            extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --extra-cflags=-fvisibility=hidden"
 
           - os: ubuntu-24.04-arm
             target: linux-arm64
             upx: true
-            extra-config: "--extra-cflags=-fvisibility=hidden"
+            extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --extra-cflags=-fvisibility=hidden"
 
           # ── macOS (不要 UPX —— 会破坏代码签名) ──
           - os: macos-latest
             target: macos-x86_64
             upx: false
-            extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
+            extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
             pre-configure: |
               export CC="clang -arch x86_64"
               export CXX="clang++ -arch x86_64"
@@ -55,6 +55,7 @@ jobs:
           - os: macos-latest
             target: macos-arm64
             upx: false
+            extra-config: "--enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox"
 
     steps:
       - uses: actions/checkout@v4
@@ -70,7 +71,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y -qq
-          sudo apt-get install -y -qq make gcc pkg-config upx-ucl
+          sudo apt-get install -y -qq make gcc pkg-config upx-ucl libva-dev
 
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
@@ -118,8 +119,8 @@ jobs:
             ${{ matrix.extra-config }}
           echo "=== Configured threading model ==="
           grep -E 'THREADS|PTHREAD|W32THREAD' ffbuild/config.mak || true
-          echo "=== Enabled decoders/parsers/bsfs ==="
-          grep -E 'CONFIG_(EAC3|H264|HEVC|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE)' config.h || true
+          echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
+          grep -E 'CONFIG_(EAC3|H264|HEVC|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|HEVC_D3D11VA|H264_DXVA2|HEVC_DXVA2|H264_VAAPI|HEVC_VAAPI|H264_VIDEOTOOLBOX|HEVC_VIDEOTOOLBOX)' config.h || true
         shell: bash
 
       # ── Force-remove pthread from MinGW toolchain (Windows only) ──

@@ -8,6 +8,31 @@ INSTALL_DIR="$SCRIPT_DIR/ffmpeg_install"
 
 echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + HEVC) ==="
 
+HWACCEL_CONFIG=()
+case "$OSTYPE" in
+    darwin*)
+        HWACCEL_CONFIG+=(
+            --enable-hwaccel=h264_videotoolbox
+            --enable-hwaccel=hevc_videotoolbox
+        )
+        ;;
+    linux*)
+        HWACCEL_CONFIG+=(
+            --enable-vaapi
+            --enable-hwaccel=h264_vaapi
+            --enable-hwaccel=hevc_vaapi
+        )
+        ;;
+    msys*|cygwin*|win32)
+        HWACCEL_CONFIG+=(
+            --enable-hwaccel=h264_d3d11va
+            --enable-hwaccel=hevc_d3d11va
+            --enable-hwaccel=h264_dxva2
+            --enable-hwaccel=hevc_dxva2
+        )
+        ;;
+esac
+
 # ── 1. 构建 FFmpeg ──
 ./configure \
     --disable-everything \
@@ -37,7 +62,8 @@ echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + HEVC) ==="
     --disable-pthreads \
     --extra-ldflags="-static-libgcc -static-libstdc++" \
     --pkg-config-flags="--static" \
-    --prefix="$INSTALL_DIR"
+    --prefix="$INSTALL_DIR" \
+    "${HWACCEL_CONFIG[@]}"
 
 make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
 make install

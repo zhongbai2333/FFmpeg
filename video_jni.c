@@ -38,6 +38,7 @@ typedef struct {
     int             original_width;
     int             original_height;
     int             use_hwaccel;
+    char            hwaccel_name[32];
 } VideoDecoderHandle;
 
 /* ── 辅助：抛 Java 异常 ── */
@@ -90,6 +91,10 @@ static int tryEnableHwaccel(const AVCodec *codec, AVCodecContext *ctx, VideoDeco
         h->hw_pix_fmt = config->pix_fmt;
         h->hw_device_type = config->device_type;
         h->use_hwaccel = 1;
+        const char *device_name = av_hwdevice_get_type_name(config->device_type);
+        if (device_name) {
+            snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", device_name);
+        }
         ctx->hw_device_ctx = av_buffer_ref(device);
         ctx->get_format = getHwFormat;
         ctx->opaque = h;
@@ -141,6 +146,7 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     h->target_height = target_height;
     h->hw_pix_fmt = AV_PIX_FMT_NONE;
     h->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+    snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", "cpu");
 
     if (!h->packet || !h->decode_frame || !h->transfer_frame || !h->rgb_frame) {
         av_packet_free(&h->packet);
@@ -363,6 +369,17 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_flush(
     if (h && h->codec_ctx) {
         avcodec_flush_buffers(h->codec_ctx);
     }
+}
+
+JNIEXPORT jstring JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getHwaccelName(
+        JNIEnv *env, jclass cls, jlong handle) {
+
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
+    if (!h || !h->use_hwaccel || !h->hwaccel_name[0]) {
+        return (*env)->NewStringUTF(env, "cpu");
+    }
+    return (*env)->NewStringUTF(env, h->hwaccel_name);
 }
 
 /* ── close ── */
