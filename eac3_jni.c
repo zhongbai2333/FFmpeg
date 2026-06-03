@@ -53,7 +53,7 @@ static void throwException(JNIEnv *env, const char *msg) {
 /* ── decoderOpen ── */
 
 JNIEXPORT jlong JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decoderOpen(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_decoderOpen(
         JNIEnv *env, jclass cls) {
 
     const AVCodec *codec = avcodec_find_decoder(AV_CODEC_ID_EAC3);
@@ -100,7 +100,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decoderOpen(
 /* ── decode ── */
 
 JNIEXPORT jobjectArray JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decode(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_decode(
         JNIEnv *env, jclass cls, jlong handle,
         jbyteArray data, jint offset, jint length) {
 
@@ -185,7 +185,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_decode(
 /* ── flush ── */
 
 JNIEXPORT void JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_flush(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_flush(
         JNIEnv *env, jclass cls, jlong handle) {
 
     DecoderHandle *h = (DecoderHandle *)(size_t) handle;
@@ -197,7 +197,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_flush(
 /* ── close ── */
 
 JNIEXPORT void JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_close(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_close(
         JNIEnv *env, jclass cls, jlong handle) {
 
     DecoderHandle *h = (DecoderHandle *)(size_t) handle;
@@ -213,7 +213,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_close(
 /* ── version ── */
 
 JNIEXPORT jstring JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_Eac3Jni_version(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_version(
         JNIEnv *env, jclass cls) {
 
     const char *ver = av_version_info();

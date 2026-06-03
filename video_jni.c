@@ -217,7 +217,7 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
 /* ── decoderOpen: 兼容当前 Java 侧 H.264-only 接口 ── */
 
 JNIEXPORT jlong JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpen(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpen(
         JNIEnv *env, jclass cls, jint target_width, jint target_height) {
     return decoderOpenForCodec(env, 7, target_width, target_height, "none");
 }
@@ -225,13 +225,13 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpen
 /* ── decoderOpenForCodec: 预留给后续 Java 侧按 B站 codecid 选择 H.264/HEVC ── */
 
 JNIEXPORT jlong JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpenForCodec(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpenForCodec(
         JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height) {
     return decoderOpenForCodec(env, codec_id, target_width, target_height, "none");
 }
 
 JNIEXPORT jlong JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpenForCodecWithHwaccel(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpenForCodecWithHwaccel(
         JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height, jstring hwaccel) {
     const char *hw = hwaccel ? (*env)->GetStringUTFChars(env, hwaccel, NULL) : NULL;
     jlong handle = decoderOpenForCodec(env, codec_id, target_width, target_height, hw ? hw : "auto");
@@ -244,7 +244,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_decoderOpen
 /* ── getVideoFrame ── */
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFrame(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrame(
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
@@ -358,7 +358,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFra
 }
 
 JNIEXPORT jbyteArray JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFrameYuv420(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameYuv420(
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
@@ -495,7 +495,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFra
 }
 
 JNIEXPORT jint JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_receiveFrameNoCopy(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_receiveFrameNoCopy(
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
@@ -524,7 +524,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_receiveFram
 /* ── sendPacket ── */
 
 JNIEXPORT jint JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_sendPacket(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacket(
         JNIEnv *env, jclass cls, jlong handle,
         jbyteArray data, jint offset, jint length) {
 
@@ -559,7 +559,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_sendPacket(
 /* ── flush ── */
 
 JNIEXPORT void JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_flush(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_flush(
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
@@ -569,7 +569,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_flush(
 }
 
 JNIEXPORT jstring JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getHwaccelName(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getHwaccelName(
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
@@ -582,7 +582,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getHwaccelN
 /* ── close ── */
 
 JNIEXPORT void JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_close(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_close(
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
@@ -603,7 +603,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_close(
 /* ── getDimensions: 返回原始宽高 (width << 32 | height) ── */
 
 JNIEXPORT jlong JNICALL
-Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getDimensions(
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getDimensions(
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
