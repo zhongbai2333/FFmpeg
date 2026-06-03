@@ -1,2 +1,8 @@
 *.pnm -diff -text
 Changelog    merge=union
+
+# Keep scripts and CI files runnable on Unix-like GitHub runners.
+*.sh text eol=lf
+configure text eol=lf
+.github/workflows/*.yml text eol=lf
+.github/workflows/*.yaml text eol=lf
