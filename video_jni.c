@@ -324,6 +324,33 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getVideoFra
     return result;
 }
 
+JNIEXPORT jint JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_receiveFrameNoCopy(
+        JNIEnv *env, jclass cls, jlong handle) {
+
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
+    if (!h || !h->codec_ctx) {
+        throwException(env, "解码器句柄无效");
+        return -1;
+    }
+
+    int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
+    if (ret < 0) {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            return 0;
+        }
+        return -1;
+    }
+
+    if (h->original_width != h->decode_frame->width || h->original_height != h->decode_frame->height) {
+        h->original_width  = h->decode_frame->width;
+        h->original_height = h->decode_frame->height;
+    }
+
+    av_frame_unref(h->decode_frame);
+    return 1;
+}
+
 /* ── sendPacket ── */
 
 JNIEXPORT jint JNICALL
