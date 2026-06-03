@@ -22,12 +22,12 @@ jobs:
           - os: windows-latest
             target: windows-x86_64
             upx: true
-            extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=hevc_d3d11va --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
+            extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
           - os: windows-11-arm
             target: windows-arm64
             upx: true
-            extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=hevc_d3d11va --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
+            extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
           # ── Linux ──
           - os: ubuntu-latest
@@ -120,7 +120,7 @@ jobs:
           echo "=== Configured threading model ==="
           grep -E 'THREADS|PTHREAD|W32THREAD' ffbuild/config.mak || true
           echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
-          grep -E 'CONFIG_(EAC3|H264|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|HEVC_D3D11VA|H264_DXVA2|HEVC_DXVA2|H264_VAAPI|HEVC_VAAPI|H264_VIDEOTOOLBOX|HEVC_VIDEOTOOLBOX)' config.h || true
+          grep -E 'CONFIG_(EAC3|H264|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|HEVC_D3D11VA|HEVC_D3D11VA2|H264_DXVA2|HEVC_DXVA2|H264_VAAPI|HEVC_VAAPI|H264_VIDEOTOOLBOX|HEVC_VIDEOTOOLBOX)' config.h || true
         shell: bash
 
       # ── Force-remove pthread from MinGW toolchain (Windows only) ──
