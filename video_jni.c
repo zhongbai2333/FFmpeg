@@ -68,12 +68,27 @@ static enum AVHWDeviceType requestedDeviceType(const char *name) {
     return av_hwdevice_find_type_by_name(name);
 }
 
+static void setHwaccelFallback(VideoDecoderHandle *h, const char *reason) {
+    if (!h) {
+        return;
+    }
+    snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "cpu(%s)", reason ? reason : "hwaccel-failed");
+}
+
 static int tryEnableHwaccel(const AVCodec *codec, AVCodecContext *ctx, VideoDecoderHandle *h,
         enum AVHWDeviceType requested) {
+    int config_count = 0;
+    int requested_matches = 0;
+    int device_ctx_matches = 0;
+    int create_failures = 0;
     for (int i = 0;; i++) {
         const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
         if (!config) {
             break;
+        }
+        config_count++;
+        if (requested == AV_HWDEVICE_TYPE_NONE || config->device_type == requested) {
+            requested_matches++;
         }
         if (!(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
             continue;
@@ -81,9 +96,11 @@ static int tryEnableHwaccel(const AVCodec *codec, AVCodecContext *ctx, VideoDeco
         if (requested != AV_HWDEVICE_TYPE_NONE && config->device_type != requested) {
             continue;
         }
+        device_ctx_matches++;
 
         AVBufferRef *device = NULL;
         if (av_hwdevice_ctx_create(&device, config->device_type, NULL, NULL, 0) < 0) {
+            create_failures++;
             continue;
         }
 
@@ -99,6 +116,17 @@ static int tryEnableHwaccel(const AVCodec *codec, AVCodecContext *ctx, VideoDeco
         ctx->get_format = getHwFormat;
         ctx->opaque = h;
         return 1;
+    }
+    if (config_count == 0) {
+        setHwaccelFallback(h, "no-codec-hw-config");
+    } else if (requested_matches == 0) {
+        setHwaccelFallback(h, "requested-device-not-built");
+    } else if (device_ctx_matches == 0) {
+        setHwaccelFallback(h, "no-hw-device-ctx-config");
+    } else if (create_failures > 0) {
+        setHwaccelFallback(h, "device-create-failed");
+    } else {
+        setHwaccelFallback(h, "hwaccel-unavailable");
     }
     return 0;
 }
@@ -403,7 +431,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_bili_codec_VideoJni_getHwaccelN
         JNIEnv *env, jclass cls, jlong handle) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->use_hwaccel || !h->hwaccel_name[0]) {
+    if (!h || !h->hwaccel_name[0]) {
         return (*env)->NewStringUTF(env, "cpu");
     }
     return (*env)->NewStringUTF(env, h->hwaccel_name);

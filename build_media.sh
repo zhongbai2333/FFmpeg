@@ -25,8 +25,12 @@ case "$OSTYPE" in
         ;;
     msys*|cygwin*|win32)
         HWACCEL_CONFIG+=(
+            --enable-d3d11va
+            --enable-dxva2
             --enable-hwaccel=h264_d3d11va
+            --enable-hwaccel=h264_d3d11va2
             --enable-hwaccel=hevc_d3d11va
+            --enable-hwaccel=hevc_d3d11va2
             --enable-hwaccel=h264_dxva2
             --enable-hwaccel=hevc_dxva2
         )
