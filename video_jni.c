@@ -357,6 +357,132 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     return result;
 }
 
+JNIEXPORT jint JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameInto(
+        JNIEnv *env, jclass cls, jlong handle, jbyteArray output) {
+
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
+    if (!h || !h->codec_ctx || !output) {
+        throwException(env, "解码器句柄或输出缓冲区无效");
+        return -1;
+    }
+
+    int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
+    if (ret < 0) {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            return 0;
+        }
+        return -1;
+    }
+
+    AVFrame *frame = h->decode_frame;
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+        av_frame_unref(h->transfer_frame);
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+            av_frame_unref(h->decode_frame);
+            return -1;
+        }
+        frame = h->transfer_frame;
+    }
+
+    int src_w = frame->width;
+    int src_h = frame->height;
+
+    if (src_w <= 0 || src_h <= 0) {
+        av_frame_unref(h->decode_frame);
+        return -1;
+    }
+
+    if (h->original_width != src_w || h->original_height != src_h) {
+        h->original_width  = src_w;
+        h->original_height = src_h;
+    }
+
+    int dst_w = h->target_width  > 0 ? h->target_width  : src_w;
+    int dst_h = h->target_height > 0 ? h->target_height : src_h;
+    int rgba_size = dst_w * dst_h * 4;
+
+    if ((*env)->GetArrayLength(env, output) < rgba_size) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        throwException(env, "RGBA 输出缓冲区不足");
+        return -1;
+    }
+
+    if (!h->rgba_sws_ctx || h->rgba_sws_src_w != src_w || h->rgba_sws_src_h != src_h
+            || h->rgba_sws_dst_w != dst_w || h->rgba_sws_dst_h != dst_h) {
+        if (h->rgba_sws_ctx) {
+            sws_freeContext(h->rgba_sws_ctx);
+        }
+        h->rgba_sws_ctx = sws_getContext(
+            src_w, src_h, frame->format,
+                dst_w, dst_h, AV_PIX_FMT_RGBA,
+                SWS_BILINEAR, NULL, NULL, NULL);
+        h->rgba_sws_src_w = src_w;
+        h->rgba_sws_src_h = src_h;
+        h->rgba_sws_dst_w = dst_w;
+        h->rgba_sws_dst_h = dst_h;
+
+        if (!h->rgba_sws_ctx) {
+            if (frame == h->transfer_frame) {
+                av_frame_unref(h->transfer_frame);
+            }
+            av_frame_unref(h->decode_frame);
+            throwException(env, "sws_getContext 失败");
+            return -1;
+        }
+    }
+
+    if (!h->rgb_frame->data[0] || h->rgb_frame->width != dst_w || h->rgb_frame->height != dst_h) {
+        av_frame_unref(h->rgb_frame);
+        h->rgb_frame->format = AV_PIX_FMT_RGBA;
+        h->rgb_frame->width  = dst_w;
+        h->rgb_frame->height = dst_h;
+        if (av_frame_get_buffer(h->rgb_frame, 1) < 0) {
+            if (frame == h->transfer_frame) {
+                av_frame_unref(h->transfer_frame);
+            }
+            av_frame_unref(h->decode_frame);
+            throwException(env, "分配 RGB 缓冲区失败");
+            return -1;
+        }
+    }
+
+    sws_scale(h->rgba_sws_ctx,
+              (const uint8_t * const *) frame->data,
+              frame->linesize,
+              0, src_h,
+              h->rgb_frame->data,
+              h->rgb_frame->linesize);
+
+    jbyte *dst = (*env)->GetByteArrayElements(env, output, NULL);
+    if (!dst) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        return -1;
+    }
+
+    int src_stride = h->rgb_frame->linesize[0];
+    int dst_stride = dst_w * 4;
+    const uint8_t *src = h->rgb_frame->data[0];
+
+    for (int y = 0; y < dst_h; y++) {
+        memcpy(dst + y * dst_stride, src + y * src_stride, dst_stride);
+    }
+
+    (*env)->ReleaseByteArrayElements(env, output, dst, 0);
+
+    if (frame == h->transfer_frame) {
+        av_frame_unref(h->transfer_frame);
+    }
+    av_frame_unref(h->decode_frame);
+    return 1;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameYuv420(
         JNIEnv *env, jclass cls, jlong handle) {
