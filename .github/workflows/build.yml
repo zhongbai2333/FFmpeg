@@ -448,6 +448,7 @@ jobs:
           if [ "${{ runner.os }}" = "Linux" ]; then
             for soname in libavutil.so.60 libswresample.so.6 libswscale.so.9 libavcodec.so.62; do
               target="$(readlink "install/lib/$soname" 2>/dev/null || true)"
+              rm -f "dist/${{ matrix.target }}/$soname"
               if [ -n "$target" ] && [ -f "install/lib/$target" ]; then
                 cp "install/lib/$target" "dist/${{ matrix.target }}/$soname"
               elif [ -f "install/lib/$soname" ]; then
@@ -455,6 +456,11 @@ jobs:
               else
                 echo "::error::Missing Linux SONAME file: $soname"
                 find install/lib -maxdepth 1 -name 'libav*.so*' -o -name 'libsw*.so*'
+                exit 1
+              fi
+              if [ -L "dist/${{ matrix.target }}/$soname" ] || [ ! -s "dist/${{ matrix.target }}/$soname" ]; then
+                echo "::error::Linux SONAME package entry must be a non-empty regular file: $soname"
+                ls -l "dist/${{ matrix.target }}/$soname" || true
                 exit 1
               fi
             done
