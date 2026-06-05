@@ -126,6 +126,43 @@ case "$OSTYPE" in
         ;;
 esac
 
+if [[ "$OSTYPE" == darwin* ]]; then
+    echo "=== macOS Mach-O install name fix ==="
+    # Local build writes JNI dylibs to bin for historical compatibility; keep Java-facing
+    # files together with FFmpeg libs when auditing/fixing loader-relative dependencies.
+    cp -f "$INSTALL_DIR/bin/libeac3_jni.dylib" "$INSTALL_DIR/lib/libeac3_jni.dylib"
+    cp -f "$INSTALL_DIR/bin/libvideo_jni.dylib" "$INSTALL_DIR/lib/libvideo_jni.dylib"
+
+    install_name_tool -id "@loader_path/libavutil.60.dylib" "$INSTALL_DIR/lib/libavutil.60.dylib"
+    install_name_tool -id "@loader_path/libswresample.6.dylib" "$INSTALL_DIR/lib/libswresample.6.dylib"
+    install_name_tool -id "@loader_path/libswscale.9.dylib" "$INSTALL_DIR/lib/libswscale.9.dylib"
+    install_name_tool -id "@loader_path/libavcodec.62.dylib" "$INSTALL_DIR/lib/libavcodec.62.dylib"
+    install_name_tool -id "@loader_path/libeac3_jni.dylib" "$INSTALL_DIR/lib/libeac3_jni.dylib"
+    install_name_tool -id "@loader_path/libvideo_jni.dylib" "$INSTALL_DIR/lib/libvideo_jni.dylib"
+
+    for lib in libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib libeac3_jni.dylib libvideo_jni.dylib; do
+        install_name_tool -change "$INSTALL_DIR/lib/libavutil.60.dylib" \
+            "@loader_path/libavutil.60.dylib" "$INSTALL_DIR/lib/$lib" || true
+    done
+    for lib in libeac3_jni.dylib libvideo_jni.dylib; do
+        install_name_tool -change "$INSTALL_DIR/lib/libavcodec.62.dylib" \
+            "@loader_path/libavcodec.62.dylib" "$INSTALL_DIR/lib/$lib" || true
+    done
+    install_name_tool -change "$INSTALL_DIR/lib/libswscale.9.dylib" \
+        "@loader_path/libswscale.9.dylib" "$INSTALL_DIR/lib/libvideo_jni.dylib" || true
+
+    for lib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib libeac3_jni.dylib libvideo_jni.dylib; do
+        if otool -L "$INSTALL_DIR/lib/$lib" | grep -q "$INSTALL_DIR/lib"; then
+            echo "ERROR: $lib still contains absolute install path" >&2
+            otool -L "$INSTALL_DIR/lib/$lib" >&2
+            exit 1
+        fi
+    done
+
+    cp -f "$INSTALL_DIR/lib/libeac3_jni.dylib" "$INSTALL_DIR/bin/libeac3_jni.dylib"
+    cp -f "$INSTALL_DIR/lib/libvideo_jni.dylib" "$INSTALL_DIR/bin/libvideo_jni.dylib"
+fi
+
 if [[ "$OSTYPE" == linux* ]]; then
     echo "=== Linux ELF symbol audit ==="
     require_export() {

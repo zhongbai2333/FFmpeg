@@ -211,6 +211,58 @@ jobs:
           done
         shell: bash
 
+      # ── macOS Mach-O audit/fix: use @loader_path instead of GitHub Runner absolute paths ──
+      - name: Fix macOS dylib install names
+        if: runner.os == 'macOS'
+        run: |
+          set -euo pipefail
+          libdir="install/lib"
+
+          require_file() {
+            if [ ! -f "$1" ]; then
+              echo "::error::Missing macOS dylib: $1"
+              find install -type f -name '*.dylib' -maxdepth 3 || true
+              exit 1
+            fi
+          }
+
+          for lib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
+                     libeac3_jni.dylib libvideo_jni.dylib; do
+            require_file "$libdir/$lib"
+          done
+
+          install_name_tool -id "@loader_path/libavutil.60.dylib" "$libdir/libavutil.60.dylib"
+          install_name_tool -id "@loader_path/libswresample.6.dylib" "$libdir/libswresample.6.dylib"
+          install_name_tool -id "@loader_path/libswscale.9.dylib" "$libdir/libswscale.9.dylib"
+          install_name_tool -id "@loader_path/libavcodec.62.dylib" "$libdir/libavcodec.62.dylib"
+          install_name_tool -id "@loader_path/libeac3_jni.dylib" "$libdir/libeac3_jni.dylib"
+          install_name_tool -id "@loader_path/libvideo_jni.dylib" "$libdir/libvideo_jni.dylib"
+
+          for lib in libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
+                     libeac3_jni.dylib libvideo_jni.dylib; do
+            install_name_tool -change "$PWD/install/lib/libavutil.60.dylib" \
+              "@loader_path/libavutil.60.dylib" "$libdir/$lib" || true
+          done
+          for lib in libeac3_jni.dylib libvideo_jni.dylib; do
+            install_name_tool -change "$PWD/install/lib/libavcodec.62.dylib" \
+              "@loader_path/libavcodec.62.dylib" "$libdir/$lib" || true
+          done
+          install_name_tool -change "$PWD/install/lib/libswscale.9.dylib" \
+            "@loader_path/libswscale.9.dylib" "$libdir/libvideo_jni.dylib" || true
+
+          echo "=== macOS dylib dependencies after fix ==="
+          for lib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
+                     libeac3_jni.dylib libvideo_jni.dylib; do
+            echo "--- $lib ---"
+            otool -D "$libdir/$lib" || true
+            otool -L "$libdir/$lib"
+            if otool -L "$libdir/$lib" | grep -q "$PWD/install/lib"; then
+              echo "::error::$lib still contains build-machine absolute install path"
+              exit 1
+            fi
+          done
+        shell: bash
+
       # ── Linux ELF audit: fail fast before packaging broken hidden-symbol libraries ──
       - name: Audit Linux ELF symbols
         if: runner.os == 'Linux'
@@ -459,6 +511,20 @@ jobs:
             cp install/lib/libeac3_jni.so dist/${{ matrix.target }}/
             cp install/lib/libvideo_jni.so dist/${{ matrix.target }}/
             echo "=== Packaged Linux runtime files ==="
+            ls -lh dist/${{ matrix.target }}
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            # Package only the names used by the Java loader, as regular files.
+            # Full-version dylib files are not resources and only bloat the JAR.
+            for dylib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
+                         libeac3_jni.dylib libvideo_jni.dylib; do
+              if [ ! -s "install/lib/$dylib" ]; then
+                echo "::error::Missing macOS runtime file: $dylib"
+                find install/lib -maxdepth 1 -name '*.dylib' -ls || true
+                exit 1
+              fi
+              cp "install/lib/$dylib" "dist/${{ matrix.target }}/$dylib"
+            done
+            echo "=== Packaged macOS runtime files ==="
             ls -lh dist/${{ matrix.target }}
           else
             find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so" -o -name "*.so.*" -o -name "*eac3_jni*" -o -name "*video_jni*" \) ! -name "*.h" | while read f; do
