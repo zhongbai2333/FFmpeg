@@ -434,21 +434,13 @@ jobs:
       - name: Package
         run: |
           mkdir -p dist/${{ matrix.target }}
-          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so" -o -name "*.so.*" -o -name "*eac3_jni*" -o -name "*video_jni*" \) ! -name "*.h" | while read f; do
-            cp "$f" dist/${{ matrix.target }}/
-          done
-          find install -type l -name "*.so*" | while read f; do
-            cp -P "$f" dist/${{ matrix.target }}/ 2>/dev/null || true
-          done
-
-          # GitHub release archives preserve symlinks, but mod JAR resources and
-          # Windows-side manual copying usually do not. Also materialize Linux
-          # SONAME filenames as real files so Java System.load("libavutil.so.60")
-          # and ELF DT_NEEDED lookups both work after copying into resources.
           if [ "${{ runner.os }}" = "Linux" ]; then
+            # Package only runtime SONAME filenames as real files. Do not include
+            # both libfoo.so.N and libfoo.so.N.x.y.z: JAR resources need the
+            # SONAME names, and duplicating the full-version files nearly doubles
+            # the Linux archive size.
             for soname in libavutil.so.60 libswresample.so.6 libswscale.so.9 libavcodec.so.62; do
               target="$(readlink "install/lib/$soname" 2>/dev/null || true)"
-              rm -f "dist/${{ matrix.target }}/$soname"
               if [ -n "$target" ] && [ -f "install/lib/$target" ]; then
                 cp "install/lib/$target" "dist/${{ matrix.target }}/$soname"
               elif [ -f "install/lib/$soname" ]; then
@@ -463,6 +455,17 @@ jobs:
                 ls -l "dist/${{ matrix.target }}/$soname" || true
                 exit 1
               fi
+            done
+            cp install/lib/libeac3_jni.so dist/${{ matrix.target }}/
+            cp install/lib/libvideo_jni.so dist/${{ matrix.target }}/
+            echo "=== Packaged Linux runtime files ==="
+            ls -lh dist/${{ matrix.target }}
+          else
+            find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so" -o -name "*.so.*" -o -name "*eac3_jni*" -o -name "*video_jni*" \) ! -name "*.h" | while read f; do
+              cp "$f" dist/${{ matrix.target }}/
+            done
+            find install -type l -name "*.so*" | while read f; do
+              cp -P "$f" dist/${{ matrix.target }}/ 2>/dev/null || true
             done
           fi
 
