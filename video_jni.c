@@ -41,6 +41,7 @@ typedef struct {
     int             original_width;
     int             original_height;
     int             use_hwaccel;
+    int64_t         last_frame_pts_nanos;
     char            hwaccel_name[32];
 } VideoDecoderHandle;
 
@@ -50,6 +51,11 @@ static void throwException(JNIEnv *env, const char *msg) {
     jclass cls = (*env)->FindClass(env, "java/lang/RuntimeException");
     if (cls) (*env)->ThrowNew(env, cls, msg);
 }
+
+JNIEXPORT jint JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacketWithPts(
+        JNIEnv *env, jclass cls, jlong handle,
+        jbyteArray data, jint offset, jint length, jlong pts_nanos);
 
 static enum AVPixelFormat getHwFormat(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
     VideoDecoderHandle *h = (VideoDecoderHandle *) ctx->opaque;
@@ -178,6 +184,7 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     h->target_height = target_height;
     h->hw_pix_fmt = AV_PIX_FMT_NONE;
     h->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+    h->last_frame_pts_nanos = AV_NOPTS_VALUE;
     snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", "cpu");
 
     if (!h->packet || !h->decode_frame || !h->transfer_frame || !h->rgb_frame || !h->yuv_frame) {
@@ -243,6 +250,17 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpe
 
 /* ── getVideoFrame ── */
 
+static void rememberFramePts(VideoDecoderHandle *h, AVFrame *frame) {
+    if (!h || !frame) {
+        return;
+    }
+    int64_t pts = frame->best_effort_timestamp;
+    if (pts == AV_NOPTS_VALUE) {
+        pts = frame->pts;
+    }
+    h->last_frame_pts_nanos = pts != AV_NOPTS_VALUE ? pts : AV_NOPTS_VALUE;
+}
+
 JNIEXPORT jbyteArray JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrame(
         JNIEnv *env, jclass cls, jlong handle) {
@@ -262,6 +280,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     AVFrame *frame = h->decode_frame;
+    rememberFramePts(h, h->decode_frame);
     if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
         av_frame_unref(h->transfer_frame);
         if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
@@ -376,6 +395,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     AVFrame *frame = h->decode_frame;
+    rememberFramePts(h, h->decode_frame);
     if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
         av_frame_unref(h->transfer_frame);
         if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
@@ -502,6 +522,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     AVFrame *frame = h->decode_frame;
+    rememberFramePts(h, h->decode_frame);
     if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
         av_frame_unref(h->transfer_frame);
         if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
@@ -643,6 +664,8 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_receiveFra
         h->original_height = h->decode_frame->height;
     }
 
+    rememberFramePts(h, h->decode_frame);
+
     av_frame_unref(h->decode_frame);
     return 1;
 }
@@ -653,6 +676,15 @@ JNIEXPORT jint JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacket(
         JNIEnv *env, jclass cls, jlong handle,
         jbyteArray data, jint offset, jint length) {
+
+    return Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacketWithPts(
+        env, cls, handle, data, offset, length, (jlong) AV_NOPTS_VALUE);
+}
+
+JNIEXPORT jint JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacketWithPts(
+    JNIEnv *env, jclass cls, jlong handle,
+    jbyteArray data, jint offset, jint length, jlong pts_nanos) {
 
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
     if (!h || !h->codec_ctx) {
@@ -674,12 +706,32 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacket
     memcpy(h->packet->data, bytes + offset, length);
     (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
 
+    if (pts_nanos >= 0) {
+        h->packet->pts = (int64_t) pts_nanos;
+        h->packet->dts = AV_NOPTS_VALUE;
+        h->packet->time_base = (AVRational) { 1, 1000000000 };
+        h->codec_ctx->pkt_timebase = (AVRational) { 1, 1000000000 };
+    } else {
+        h->packet->pts = AV_NOPTS_VALUE;
+        h->packet->dts = AV_NOPTS_VALUE;
+    }
+
     ret = avcodec_send_packet(h->codec_ctx, h->packet);
     if (ret < 0) {
         return -1;
     }
 
     return 0;
+}
+
+JNIEXPORT jlong JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getLastFramePtsNanos(
+        JNIEnv *env, jclass cls, jlong handle) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
+    if (!h) {
+        return -1;
+    }
+    return h->last_frame_pts_nanos != AV_NOPTS_VALUE ? (jlong) h->last_frame_pts_nanos : -1;
 }
 
 /* ── flush ── */
@@ -691,6 +743,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_flush(
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
     if (h && h->codec_ctx) {
         avcodec_flush_buffers(h->codec_ctx);
+        h->last_frame_pts_nanos = AV_NOPTS_VALUE;
     }
 }
 
