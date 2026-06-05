@@ -437,9 +437,29 @@ jobs:
           find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so" -o -name "*.so.*" -o -name "*eac3_jni*" -o -name "*video_jni*" \) ! -name "*.h" | while read f; do
             cp "$f" dist/${{ matrix.target }}/
           done
-          find install -type l -name "*.so" | while read f; do
+          find install -type l -name "*.so*" | while read f; do
             cp -P "$f" dist/${{ matrix.target }}/ 2>/dev/null || true
           done
+
+          # GitHub release archives preserve symlinks, but mod JAR resources and
+          # Windows-side manual copying usually do not. Also materialize Linux
+          # SONAME filenames as real files so Java System.load("libavutil.so.60")
+          # and ELF DT_NEEDED lookups both work after copying into resources.
+          if [ "${{ runner.os }}" = "Linux" ]; then
+            for soname in libavutil.so.60 libswresample.so.6 libswscale.so.9 libavcodec.so.62; do
+              target="$(readlink "install/lib/$soname" 2>/dev/null || true)"
+              if [ -n "$target" ] && [ -f "install/lib/$target" ]; then
+                cp "install/lib/$target" "dist/${{ matrix.target }}/$soname"
+              elif [ -f "install/lib/$soname" ]; then
+                cp "install/lib/$soname" "dist/${{ matrix.target }}/$soname"
+              else
+                echo "::error::Missing Linux SONAME file: $soname"
+                find install/lib -maxdepth 1 -name 'libav*.so*' -o -name 'libsw*.so*'
+                exit 1
+              fi
+            done
+          fi
+
           tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
         shell: bash
 
