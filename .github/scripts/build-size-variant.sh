@@ -84,7 +84,7 @@ fi
 make -j"$JOBS"
 make install
 
-if [[ "${UPX:-false}" == "true" ]] && command -v upx >/dev/null 2>&1; then
+if [[ "${UPX:-false}" == "true" && "$(uname -s 2>/dev/null || true)" != Linux* ]] && command -v upx >/dev/null 2>&1; then
   find "$PREFIX" -type f \( -name "*.dll" -o -name "*.so*" \) | while read -r f; do
     case "$(basename "$f")" in
       libwinpthread-1.dll) continue ;;

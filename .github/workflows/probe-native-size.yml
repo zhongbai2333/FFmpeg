@@ -36,7 +36,7 @@ jobs:
             shell: msys2 {0}
           - target: linux-x86_64
             os: ubuntu-latest
-            extra-config: "--disable-asm --extra-cflags=-fvisibility=hidden"
+            extra-config: "--disable-asm"
             shell: bash
           - target: macos-arm64
             os: macos-latest

@@ -32,13 +32,13 @@ jobs:
           # ── Linux ──
           - os: ubuntu-latest
             target: linux-x86_64
-            upx: true
-            extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --extra-cflags=-fvisibility=hidden"
+            upx: false
+            extra-config: ""
 
           - os: ubuntu-24.04-arm
             target: linux-arm64
-            upx: true
-            extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=hevc_vaapi --extra-cflags=-fvisibility=hidden"
+            upx: false
+            extra-config: ""
 
           # ── macOS (不要 UPX —— 会破坏代码签名) ──
           - os: macos-latest
@@ -71,7 +71,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y -qq
-          sudo apt-get install -y -qq make gcc pkg-config upx-ucl libva-dev
+          sudo apt-get install -y -qq make gcc pkg-config binutils
 
       - name: Install tools (macOS)
         if: runner.os == 'macOS'
@@ -173,10 +173,14 @@ jobs:
             linux-x86_64|linux-arm64)
               gcc -shared -o "$JNI_OUT/libeac3_jni.so" eac3_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
-                -I install/include -L install/lib -lavcodec -lavutil
+                -I install/include -L install/lib \
+                -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' \
+                -lavcodec -lavutil
               gcc -shared -o "$JNI_OUT/libvideo_jni.so" video_jni.c \
                 -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
-                -I install/include -L install/lib -lavcodec -lswscale -lavutil
+                -I install/include -L install/lib \
+                -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' \
+                -lavcodec -lswscale -lavutil
               ;;
             macos-x86_64)
               gcc -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
@@ -204,6 +208,53 @@ jobs:
 
           find "$JNI_OUT" -type f \( -name "*eac3_jni*" -o -name "*video_jni*" \) | while read f; do
             printf "  %-40s %6d bytes\n" "$(basename "$f")" $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+          done
+        shell: bash
+
+      # ── Linux ELF audit: fail fast before packaging broken hidden-symbol libraries ──
+      - name: Audit Linux ELF symbols
+        if: runner.os == 'Linux'
+        run: |
+          set -euo pipefail
+          libdir="install/lib"
+
+          require_export() {
+            lib="$1"
+            symbol="$2"
+            if ! readelf --dyn-syms --wide "$libdir/$lib" | grep -q " $symbol@@\| $symbol$"; then
+              echo "::error::$lib does not export required dynamic symbol: $symbol"
+              readelf -d "$libdir/$lib" || true
+              readelf --dyn-syms --wide "$libdir/$lib" | head -80 || true
+              exit 1
+            fi
+          }
+
+          require_needed() {
+            lib="$1"
+            needed="$2"
+            if ! readelf -d "$libdir/$lib" | grep -q "Shared library: \[$needed"; then
+              echo "::error::$lib is missing DT_NEEDED entry for $needed"
+              readelf -d "$libdir/$lib" || true
+              objdump -T "$libdir/$lib" | grep -E 'avcodec|avutil|sws_' || true
+              exit 1
+            fi
+          }
+
+          require_export libavutil.so.60 av_buffer_allocz
+          require_export libavcodec.so.62 avcodec_send_packet
+          require_export libswscale.so.9 sws_scale
+
+          require_needed libeac3_jni.so libavcodec.so.62
+          require_needed libeac3_jni.so libavutil.so.60
+          require_needed libvideo_jni.so libavcodec.so.62
+          require_needed libvideo_jni.so libavutil.so.60
+          require_needed libvideo_jni.so libswscale.so.9
+
+          for lib in libavutil.so.60 libavcodec.so.62 libswscale.so.9 libeac3_jni.so libvideo_jni.so; do
+            echo "=== $lib dynamic section ==="
+            readelf -d "$libdir/$lib" | grep -E 'NEEDED|SONAME|RPATH|RUNPATH' || true
+            echo "=== $lib key symbols ==="
+            objdump -T "$libdir/$lib" | grep -E 'av_buffer_allocz|avcodec_send_packet|avcodec_receive_frame|avcodec_flush_buffers|sws_scale|Java_com_' || true
           done
         shell: bash
 

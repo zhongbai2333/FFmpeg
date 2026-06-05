@@ -32,9 +32,9 @@ echo "=== FFmpeg minimal E-AC-3 build ==="
 make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
 make install
 
-# Windows / Linux: UPX 压缩
-# macOS: 跳过，避免破坏代码签名
-if [[ "$OSTYPE" != "darwin"* ]] && command -v upx &>/dev/null; then
+# Windows: UPX 压缩
+# Linux/macOS: 跳过，避免破坏 ELF/Mach-O 动态符号审计或代码签名
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]] && command -v upx &>/dev/null; then
     echo "=== UPX compress ==="
     find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
         upx -9 "$f" || true

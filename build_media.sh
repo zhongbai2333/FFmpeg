@@ -17,11 +17,8 @@ case "$OSTYPE" in
         )
         ;;
     linux*)
-        HWACCEL_CONFIG+=(
-            --enable-vaapi
-            --enable-hwaccel=h264_vaapi
-            --enable-hwaccel=hevc_vaapi
-        )
+        # Linux bundle uses CPU decoding by default. Enabling VAAPI pulls in extra
+        # distro-specific dependencies and can trigger hwtransfer/sws_scale issues.
         ;;
     msys*|cygwin*|win32)
         HWACCEL_CONFIG+=(
@@ -98,7 +95,8 @@ case "$OSTYPE" in
         ;;
     linux*)
         gcc -shared -o "$INSTALL_DIR/lib/libeac3_jni.so" "$SCRIPT_DIR/eac3_jni.c" \
-            $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS $EXTRA_FLAGS
+            $JNI_INCLUDES -I"$INSTALL_DIR/include" \
+            -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' $LIBS $EXTRA_FLAGS
         ;;
     msys*|cygwin*|win32)
         gcc -shared -o "$INSTALL_DIR/bin/eac3_jni.dll" "$SCRIPT_DIR/eac3_jni.c" \
@@ -118,7 +116,8 @@ case "$OSTYPE" in
         ;;
     linux*)
         gcc -shared -o "$INSTALL_DIR/lib/libvideo_jni.so" "$SCRIPT_DIR/video_jni.c" \
-            $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS_VIDEO $EXTRA_FLAGS
+            $JNI_INCLUDES -I"$INSTALL_DIR/include" \
+            -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' $LIBS_VIDEO $EXTRA_FLAGS
         ;;
     msys*|cygwin*|win32)
         gcc -shared -o "$INSTALL_DIR/bin/video_jni.dll" "$SCRIPT_DIR/video_jni.c" \
@@ -126,6 +125,36 @@ case "$OSTYPE" in
             -Wl,--out-implib,libvideo_jni.dll.a $EXTRA_FLAGS
         ;;
 esac
+
+if [[ "$OSTYPE" == linux* ]]; then
+    echo "=== Linux ELF symbol audit ==="
+    require_export() {
+        local lib="$1" symbol="$2"
+        if ! readelf --dyn-syms --wide "$INSTALL_DIR/lib/$lib" | grep -q " $symbol@@\| $symbol$"; then
+            echo "ERROR: $lib does not export required dynamic symbol: $symbol" >&2
+            readelf -d "$INSTALL_DIR/lib/$lib" || true
+            readelf --dyn-syms --wide "$INSTALL_DIR/lib/$lib" | head -80 || true
+            exit 1
+        fi
+    }
+    require_needed() {
+        local lib="$1" needed="$2"
+        if ! readelf -d "$INSTALL_DIR/lib/$lib" | grep -q "Shared library: \[$needed"; then
+            echo "ERROR: $lib is missing DT_NEEDED entry for $needed" >&2
+            readelf -d "$INSTALL_DIR/lib/$lib" || true
+            objdump -T "$INSTALL_DIR/lib/$lib" | grep -E 'avcodec|avutil|sws_' || true
+            exit 1
+        fi
+    }
+    require_export libavutil.so.60 av_buffer_allocz
+    require_export libavcodec.so.62 avcodec_send_packet
+    require_export libswscale.so.9 sws_scale
+    require_needed libeac3_jni.so libavcodec.so.62
+    require_needed libeac3_jni.so libavutil.so.60
+    require_needed libvideo_jni.so libavcodec.so.62
+    require_needed libvideo_jni.so libavutil.so.60
+    require_needed libvideo_jni.so libswscale.so.9
+fi
 
 # ── 4. 报告 ──
 echo ""
