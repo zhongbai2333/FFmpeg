@@ -9,6 +9,7 @@ INSTALL_DIR="$SCRIPT_DIR/ffmpeg_install"
 echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + HEVC) ==="
 
 HWACCEL_CONFIG=()
+ENABLE_LINUX_VAAPI="${ENABLE_LINUX_VAAPI:-1}"
 case "$OSTYPE" in
     darwin*)
         HWACCEL_CONFIG+=(
@@ -17,8 +18,16 @@ case "$OSTYPE" in
         )
         ;;
     linux*)
-        # Linux bundle uses CPU decoding by default. Enabling VAAPI pulls in extra
-        # distro-specific dependencies and can trigger hwtransfer/sws_scale issues.
+        # Linux bundle enables VAAPI by default for GitHub Runner builds. Set
+        # ENABLE_LINUX_VAAPI=0/false to force a CPU-only build if CI dependencies
+        # are temporarily unavailable.
+        if [[ "$ENABLE_LINUX_VAAPI" != "0" && "$ENABLE_LINUX_VAAPI" != "false" ]]; then
+            HWACCEL_CONFIG+=(
+                --enable-vaapi
+                --enable-hwaccel=h264_vaapi
+                --enable-hwaccel=hevc_vaapi
+            )
+        fi
         ;;
     msys*|cygwin*|win32)
         HWACCEL_CONFIG+=(

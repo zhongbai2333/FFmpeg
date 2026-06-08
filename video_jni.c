@@ -36,6 +36,7 @@ typedef struct {
     enum AVHWDeviceType hw_device_type;
     int             rgba_sws_src_w, rgba_sws_src_h, rgba_sws_dst_w, rgba_sws_dst_h;
     int             yuv_sws_src_w, yuv_sws_src_h, yuv_sws_dst_w, yuv_sws_dst_h;
+    enum AVPixelFormat yuv_sws_dst_format;
     int             target_width;
     int             target_height;
     int             original_width;
@@ -184,6 +185,7 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     h->target_height = target_height;
     h->hw_pix_fmt = AV_PIX_FMT_NONE;
     h->hw_device_type = AV_HWDEVICE_TYPE_NONE;
+    h->yuv_sws_dst_format = AV_PIX_FMT_NONE;
     h->last_frame_pts_nanos = AV_NOPTS_VALUE;
     snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", "cpu");
 
@@ -556,7 +558,8 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h
-            || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h) {
+            || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h
+            || h->yuv_sws_dst_format != AV_PIX_FMT_YUV420P) {
         if (h->yuv_sws_ctx) {
             sws_freeContext(h->yuv_sws_ctx);
         }
@@ -567,6 +570,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         h->yuv_sws_src_h = src_h;
         h->yuv_sws_dst_w = dst_w;
         h->yuv_sws_dst_h = dst_h;
+        h->yuv_sws_dst_format = AV_PIX_FMT_YUV420P;
         if (!h->yuv_sws_ctx) {
             av_frame_unref(h->decode_frame);
             if (frame == h->transfer_frame) {
@@ -577,7 +581,8 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         }
     }
 
-    if (!h->yuv_frame->data[0] || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h) {
+    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_YUV420P
+            || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h) {
         av_frame_unref(h->yuv_frame);
         h->yuv_frame->format = AV_PIX_FMT_YUV420P;
         h->yuv_frame->width = dst_w;
@@ -630,6 +635,147 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     for (int y = 0; y < uv_h; y++) {
         memcpy(u_dst + y * uv_w, h->yuv_frame->data[1] + y * h->yuv_frame->linesize[1], uv_w);
         memcpy(v_dst + y * uv_w, h->yuv_frame->data[2] + y * h->yuv_frame->linesize[2], uv_w);
+    }
+
+    (*env)->ReleaseByteArrayElements(env, result, dst, 0);
+
+    if (frame == h->transfer_frame) {
+        av_frame_unref(h->transfer_frame);
+    }
+    av_frame_unref(h->decode_frame);
+    return result;
+}
+
+JNIEXPORT jbyteArray JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameNv12(
+        JNIEnv *env, jclass cls, jlong handle) {
+
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
+    if (!h || !h->codec_ctx) {
+        throwException(env, "解码器句柄无效");
+        return NULL;
+    }
+
+    int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
+    if (ret < 0) {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+            return NULL;
+        }
+        return NULL;
+    }
+
+    AVFrame *frame = h->decode_frame;
+    rememberFramePts(h, h->decode_frame);
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+        av_frame_unref(h->transfer_frame);
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+            av_frame_unref(h->decode_frame);
+            return NULL;
+        }
+        frame = h->transfer_frame;
+    }
+
+    int src_w = frame->width;
+    int src_h = frame->height;
+    if (src_w <= 0 || src_h <= 0) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        return NULL;
+    }
+
+    if (h->original_width != src_w || h->original_height != src_h) {
+        h->original_width = src_w;
+        h->original_height = src_h;
+    }
+
+    int dst_w = h->target_width > 0 ? h->target_width : src_w;
+    int dst_h = h->target_height > 0 ? h->target_height : src_h;
+    if ((dst_w & 1) != 0 || (dst_h & 1) != 0) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        throwException(env, "NV12 输出需要偶数宽高");
+        return NULL;
+    }
+
+    if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h
+            || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h
+            || h->yuv_sws_dst_format != AV_PIX_FMT_NV12) {
+        if (h->yuv_sws_ctx) {
+            sws_freeContext(h->yuv_sws_ctx);
+        }
+        h->yuv_sws_ctx = sws_getContext(src_w, src_h, frame->format,
+                dst_w, dst_h, AV_PIX_FMT_NV12,
+                SWS_BILINEAR, NULL, NULL, NULL);
+        h->yuv_sws_src_w = src_w;
+        h->yuv_sws_src_h = src_h;
+        h->yuv_sws_dst_w = dst_w;
+        h->yuv_sws_dst_h = dst_h;
+        h->yuv_sws_dst_format = AV_PIX_FMT_NV12;
+        if (!h->yuv_sws_ctx) {
+            if (frame == h->transfer_frame) {
+                av_frame_unref(h->transfer_frame);
+            }
+            av_frame_unref(h->decode_frame);
+            throwException(env, "sws_getContext(NV12) 失败");
+            return NULL;
+        }
+    }
+
+    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_NV12
+            || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h) {
+        av_frame_unref(h->yuv_frame);
+        h->yuv_frame->format = AV_PIX_FMT_NV12;
+        h->yuv_frame->width = dst_w;
+        h->yuv_frame->height = dst_h;
+        if (av_frame_get_buffer(h->yuv_frame, 1) < 0) {
+            if (frame == h->transfer_frame) {
+                av_frame_unref(h->transfer_frame);
+            }
+            av_frame_unref(h->decode_frame);
+            throwException(env, "分配 NV12 缓冲区失败");
+            return NULL;
+        }
+    }
+
+    sws_scale(h->yuv_sws_ctx,
+              (const uint8_t * const *) frame->data,
+              frame->linesize,
+              0, src_h,
+              h->yuv_frame->data,
+              h->yuv_frame->linesize);
+
+    int y_size = dst_w * dst_h;
+    int uv_h = dst_h / 2;
+    int uv_stride = dst_w;
+    int nv12_size = y_size + uv_stride * uv_h;
+    jbyteArray result = (*env)->NewByteArray(env, nv12_size);
+    if (!result) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        return NULL;
+    }
+
+    jbyte *dst = (*env)->GetByteArrayElements(env, result, NULL);
+    if (!dst) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        return NULL;
+    }
+
+    for (int y = 0; y < dst_h; y++) {
+        memcpy(dst + y * dst_w, h->yuv_frame->data[0] + y * h->yuv_frame->linesize[0], dst_w);
+    }
+    jbyte *uv_dst = dst + y_size;
+    for (int y = 0; y < uv_h; y++) {
+        memcpy(uv_dst + y * uv_stride, h->yuv_frame->data[1] + y * h->yuv_frame->linesize[1], uv_stride);
     }
 
     (*env)->ReleaseByteArrayElements(env, result, dst, 0);
