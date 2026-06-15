@@ -32,19 +32,19 @@ jobs:
         include:
           - target: windows-x86_64
             os: windows-latest
-            extra-config: "--disable-asm --enable-w32threads --disable-pthreads --extra-ldflags=-static-libgcc"
+            extra-config: "--enable-w32threads --disable-pthreads --extra-ldflags=-static-libgcc"
             shell: msys2 {0}
           - target: linux-x86_64
             os: ubuntu-latest
-            extra-config: "--disable-asm"
+            extra-config: ""
             shell: bash
           - target: macos-arm64
             os: macos-latest
-            extra-config: "--disable-asm"
+            extra-config: ""
             shell: bash
           - target: macos-x86_64
             os: macos-latest
-            extra-config: "--disable-asm --arch=x86_64 --target-os=darwin --enable-cross-compile"
+            extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile"
             pre-configure: |
               export CC="clang -arch x86_64"
               export CXX="clang++ -arch x86_64"
@@ -64,7 +64,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           sudo apt-get update -y -qq
-          sudo apt-get install -y -qq make gcc pkg-config libva-dev libdrm-dev
+          sudo apt-get install -y -qq make gcc nasm pkg-config libva-dev libdrm-dev
           if [ "${{ inputs.upx || true }}" = "true" ]; then
             sudo apt-get install -y -qq upx-ucl || true
           fi
@@ -72,6 +72,7 @@ jobs:
       - name: Install build tools (macOS)
         if: runner.os == 'macOS'
         run: |
+          brew install nasm
           xcodebuild -version
           clang --version
 
@@ -86,6 +87,7 @@ jobs:
             python
             mingw-w64-ucrt-x86_64-gcc
             mingw-w64-ucrt-x86_64-make
+            mingw-w64-ucrt-x86_64-nasm
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-upx
 
