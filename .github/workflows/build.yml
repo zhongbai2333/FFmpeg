@@ -219,6 +219,36 @@ jobs:
           set -euo pipefail
           libdir="install/lib"
 
+          ffmpeg_major() {
+            awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+          }
+
+          AVUTIL_MAJOR="$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
+          SWRESAMPLE_MAJOR="$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)"
+          SWSCALE_MAJOR="$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
+          AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
+          AVUTIL_DYLIB="libavutil.${AVUTIL_MAJOR}.dylib"
+          SWRESAMPLE_DYLIB="libswresample.${SWRESAMPLE_MAJOR}.dylib"
+          SWSCALE_DYLIB="libswscale.${SWSCALE_MAJOR}.dylib"
+          AVCODEC_DYLIB="libavcodec.${AVCODEC_MAJOR}.dylib"
+
+          ensure_dylib_name() {
+            short="$1"
+            if [ -f "$libdir/$short" ]; then
+              return 0
+            fi
+            stem="${short%.dylib}"
+            candidate="$(find "$libdir" -maxdepth 1 -type f -name "$stem.*.dylib" | sort | head -n 1 || true)"
+            if [ -n "$candidate" ]; then
+              cp "$candidate" "$libdir/$short"
+              return 0
+            fi
+            link_target="$(find "$libdir" -maxdepth 1 -type l -name "$stem*.dylib" | sort | head -n 1 || true)"
+            if [ -n "$link_target" ]; then
+              cp "$(readlink "$link_target")" "$libdir/$short" 2>/dev/null || cp "$link_target" "$libdir/$short"
+            fi
+          }
+
           require_file() {
             if [ ! -f "$1" ]; then
               echo "::error::Missing macOS dylib: $1"
@@ -227,32 +257,36 @@ jobs:
             fi
           }
 
-          for lib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
+          for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
+            ensure_dylib_name "$lib"
+          done
+
+          for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
                      libeac3_jni.dylib libvideo_jni.dylib; do
             require_file "$libdir/$lib"
           done
 
-          install_name_tool -id "@loader_path/libavutil.60.dylib" "$libdir/libavutil.60.dylib"
-          install_name_tool -id "@loader_path/libswresample.6.dylib" "$libdir/libswresample.6.dylib"
-          install_name_tool -id "@loader_path/libswscale.9.dylib" "$libdir/libswscale.9.dylib"
-          install_name_tool -id "@loader_path/libavcodec.62.dylib" "$libdir/libavcodec.62.dylib"
+          install_name_tool -id "@loader_path/$AVUTIL_DYLIB" "$libdir/$AVUTIL_DYLIB"
+          install_name_tool -id "@loader_path/$SWRESAMPLE_DYLIB" "$libdir/$SWRESAMPLE_DYLIB"
+          install_name_tool -id "@loader_path/$SWSCALE_DYLIB" "$libdir/$SWSCALE_DYLIB"
+          install_name_tool -id "@loader_path/$AVCODEC_DYLIB" "$libdir/$AVCODEC_DYLIB"
           install_name_tool -id "@loader_path/libeac3_jni.dylib" "$libdir/libeac3_jni.dylib"
           install_name_tool -id "@loader_path/libvideo_jni.dylib" "$libdir/libvideo_jni.dylib"
 
-          for lib in libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
+          for lib in "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
                      libeac3_jni.dylib libvideo_jni.dylib; do
-            install_name_tool -change "$PWD/install/lib/libavutil.60.dylib" \
-              "@loader_path/libavutil.60.dylib" "$libdir/$lib" || true
+            install_name_tool -change "$PWD/install/lib/$AVUTIL_DYLIB" \
+              "@loader_path/$AVUTIL_DYLIB" "$libdir/$lib" || true
           done
           for lib in libeac3_jni.dylib libvideo_jni.dylib; do
-            install_name_tool -change "$PWD/install/lib/libavcodec.62.dylib" \
-              "@loader_path/libavcodec.62.dylib" "$libdir/$lib" || true
+            install_name_tool -change "$PWD/install/lib/$AVCODEC_DYLIB" \
+              "@loader_path/$AVCODEC_DYLIB" "$libdir/$lib" || true
           done
-          install_name_tool -change "$PWD/install/lib/libswscale.9.dylib" \
-            "@loader_path/libswscale.9.dylib" "$libdir/libvideo_jni.dylib" || true
+          install_name_tool -change "$PWD/install/lib/$SWSCALE_DYLIB" \
+            "@loader_path/$SWSCALE_DYLIB" "$libdir/libvideo_jni.dylib" || true
 
           echo "=== macOS dylib dependencies after fix ==="
-          for lib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
+          for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
                      libeac3_jni.dylib libvideo_jni.dylib; do
             echo "--- $lib ---"
             otool -D "$libdir/$lib" || true
@@ -271,6 +305,15 @@ jobs:
           set -euo pipefail
           libdir="install/lib"
 
+          ffmpeg_major() {
+            awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+          }
+
+          AVUTIL_SO="libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
+          SWRESAMPLE_SO="libswresample.so.$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)"
+          SWSCALE_SO="libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
+          AVCODEC_SO="libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
+
           require_export() {
             lib="$1"
             symbol="$2"
@@ -280,6 +323,20 @@ jobs:
               readelf --dyn-syms --wide "$libdir/$lib" | head -80 || true
               exit 1
             fi
+          }
+
+          require_any_export() {
+            lib="$1"
+            shift
+            for symbol in "$@"; do
+              if readelf --dyn-syms --wide "$libdir/$lib" | grep -q " $symbol@@\| $symbol$"; then
+                return 0
+              fi
+            done
+            echo "::error::$lib does not export any of required dynamic symbols: $*"
+            readelf -d "$libdir/$lib" || true
+            readelf --dyn-syms --wide "$libdir/$lib" | head -80 || true
+            exit 1
           }
 
           require_needed() {
@@ -293,21 +350,24 @@ jobs:
             fi
           }
 
-          require_export libavutil.so.60 av_buffer_allocz
-          require_export libavcodec.so.62 avcodec_send_packet
-          require_export libswscale.so.9 sws_scale
+          # libavutil can legitimately hide/internalize helpers that are not
+          # part of the JNI boundary in some minimal builds. Audit stable public
+          # symbols actually used by the wrappers/FFmpeg shared libraries instead.
+          require_any_export "$AVUTIL_SO" av_version_info av_frame_alloc av_frame_free
+          require_export "$AVCODEC_SO" avcodec_send_packet
+          require_export "$SWSCALE_SO" sws_scale
 
-          require_needed libeac3_jni.so libavcodec.so.62
-          require_needed libeac3_jni.so libavutil.so.60
-          require_needed libvideo_jni.so libavcodec.so.62
-          require_needed libvideo_jni.so libavutil.so.60
-          require_needed libvideo_jni.so libswscale.so.9
+          require_needed libeac3_jni.so "$AVCODEC_SO"
+          require_needed libeac3_jni.so "$AVUTIL_SO"
+          require_needed libvideo_jni.so "$AVCODEC_SO"
+          require_needed libvideo_jni.so "$AVUTIL_SO"
+          require_needed libvideo_jni.so "$SWSCALE_SO"
 
-          for lib in libavutil.so.60 libavcodec.so.62 libswscale.so.9 libeac3_jni.so libvideo_jni.so; do
+          for lib in "$AVUTIL_SO" "$AVCODEC_SO" "$SWSCALE_SO" libeac3_jni.so libvideo_jni.so; do
             echo "=== $lib dynamic section ==="
             readelf -d "$libdir/$lib" | grep -E 'NEEDED|SONAME|RPATH|RUNPATH' || true
             echo "=== $lib key symbols ==="
-            objdump -T "$libdir/$lib" | grep -E 'av_buffer_allocz|avcodec_send_packet|avcodec_receive_frame|avcodec_flush_buffers|sws_scale|Java_com_' || true
+            objdump -T "$libdir/$lib" | grep -E 'av_version_info|av_frame_alloc|av_frame_free|avcodec_send_packet|avcodec_receive_frame|avcodec_flush_buffers|sws_scale|Java_com_' || true
           done
         shell: bash
 
@@ -492,7 +552,14 @@ jobs:
             # both libfoo.so.N and libfoo.so.N.x.y.z: JAR resources need the
             # SONAME names, and duplicating the full-version files nearly doubles
             # the Linux archive size.
-            for soname in libavutil.so.60 libswresample.so.6 libswscale.so.9 libavcodec.so.62; do
+            ffmpeg_major() {
+              awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+            }
+            for soname in \
+              "libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)" \
+              "libswresample.so.$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)" \
+              "libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)" \
+              "libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"; do
               target="$(readlink "install/lib/$soname" 2>/dev/null || true)"
               if [ -n "$target" ] && [ -f "install/lib/$target" ]; then
                 cp "install/lib/$target" "dist/${{ matrix.target }}/$soname"
@@ -516,8 +583,15 @@ jobs:
           elif [ "${{ runner.os }}" = "macOS" ]; then
             # Package only the names used by the Java loader, as regular files.
             # Full-version dylib files are not resources and only bloat the JAR.
-            for dylib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib \
-                         libeac3_jni.dylib libvideo_jni.dylib; do
+            ffmpeg_major() {
+              awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+            }
+            for dylib in \
+              "libavutil.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h).dylib" \
+              "libswresample.$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h).dylib" \
+              "libswscale.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h).dylib" \
+              "libavcodec.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h).dylib" \
+              libeac3_jni.dylib libvideo_jni.dylib; do
               if [ ! -s "install/lib/$dylib" ]; then
                 echo "::error::Missing macOS runtime file: $dylib"
                 find install/lib -maxdepth 1 -name '*.dylib' -ls || true

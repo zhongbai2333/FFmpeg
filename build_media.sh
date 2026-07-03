@@ -6,6 +6,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 INSTALL_DIR="$SCRIPT_DIR/ffmpeg_install"
 
+ffmpeg_major() {
+    awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$SCRIPT_DIR/$2"
+}
+
+AVUTIL_MAJOR="$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
+SWRESAMPLE_MAJOR="$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)"
+SWSCALE_MAJOR="$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
+AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
+
 echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + HEVC) ==="
 
 HWACCEL_CONFIG=()
@@ -142,25 +151,53 @@ if [[ "$OSTYPE" == darwin* ]]; then
     cp -f "$INSTALL_DIR/bin/libeac3_jni.dylib" "$INSTALL_DIR/lib/libeac3_jni.dylib"
     cp -f "$INSTALL_DIR/bin/libvideo_jni.dylib" "$INSTALL_DIR/lib/libvideo_jni.dylib"
 
-    install_name_tool -id "@loader_path/libavutil.60.dylib" "$INSTALL_DIR/lib/libavutil.60.dylib"
-    install_name_tool -id "@loader_path/libswresample.6.dylib" "$INSTALL_DIR/lib/libswresample.6.dylib"
-    install_name_tool -id "@loader_path/libswscale.9.dylib" "$INSTALL_DIR/lib/libswscale.9.dylib"
-    install_name_tool -id "@loader_path/libavcodec.62.dylib" "$INSTALL_DIR/lib/libavcodec.62.dylib"
+    ensure_dylib_name() {
+        local short="$1"
+        if [ -f "$INSTALL_DIR/lib/$short" ]; then
+            return 0
+        fi
+        local stem="${short%.dylib}"
+        local candidate
+        candidate="$(find "$INSTALL_DIR/lib" -maxdepth 1 -type f -name "$stem.*.dylib" | sort | head -n 1 || true)"
+        if [ -n "$candidate" ]; then
+            cp "$candidate" "$INSTALL_DIR/lib/$short"
+            return 0
+        fi
+        local link_target
+        link_target="$(find "$INSTALL_DIR/lib" -maxdepth 1 -type l -name "$stem*.dylib" | sort | head -n 1 || true)"
+        if [ -n "$link_target" ]; then
+            cp "$(readlink "$link_target")" "$INSTALL_DIR/lib/$short" 2>/dev/null || cp "$link_target" "$INSTALL_DIR/lib/$short"
+        fi
+    }
+
+    AVUTIL_DYLIB="libavutil.${AVUTIL_MAJOR}.dylib"
+    SWRESAMPLE_DYLIB="libswresample.${SWRESAMPLE_MAJOR}.dylib"
+    SWSCALE_DYLIB="libswscale.${SWSCALE_MAJOR}.dylib"
+    AVCODEC_DYLIB="libavcodec.${AVCODEC_MAJOR}.dylib"
+
+    for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
+        ensure_dylib_name "$lib"
+    done
+
+    install_name_tool -id "@loader_path/$AVUTIL_DYLIB" "$INSTALL_DIR/lib/$AVUTIL_DYLIB"
+    install_name_tool -id "@loader_path/$SWRESAMPLE_DYLIB" "$INSTALL_DIR/lib/$SWRESAMPLE_DYLIB"
+    install_name_tool -id "@loader_path/$SWSCALE_DYLIB" "$INSTALL_DIR/lib/$SWSCALE_DYLIB"
+    install_name_tool -id "@loader_path/$AVCODEC_DYLIB" "$INSTALL_DIR/lib/$AVCODEC_DYLIB"
     install_name_tool -id "@loader_path/libeac3_jni.dylib" "$INSTALL_DIR/lib/libeac3_jni.dylib"
     install_name_tool -id "@loader_path/libvideo_jni.dylib" "$INSTALL_DIR/lib/libvideo_jni.dylib"
 
-    for lib in libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib libeac3_jni.dylib libvideo_jni.dylib; do
-        install_name_tool -change "$INSTALL_DIR/lib/libavutil.60.dylib" \
-            "@loader_path/libavutil.60.dylib" "$INSTALL_DIR/lib/$lib" || true
+    for lib in "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" libeac3_jni.dylib libvideo_jni.dylib; do
+        install_name_tool -change "$INSTALL_DIR/lib/$AVUTIL_DYLIB" \
+            "@loader_path/$AVUTIL_DYLIB" "$INSTALL_DIR/lib/$lib" || true
     done
     for lib in libeac3_jni.dylib libvideo_jni.dylib; do
-        install_name_tool -change "$INSTALL_DIR/lib/libavcodec.62.dylib" \
-            "@loader_path/libavcodec.62.dylib" "$INSTALL_DIR/lib/$lib" || true
+        install_name_tool -change "$INSTALL_DIR/lib/$AVCODEC_DYLIB" \
+            "@loader_path/$AVCODEC_DYLIB" "$INSTALL_DIR/lib/$lib" || true
     done
-    install_name_tool -change "$INSTALL_DIR/lib/libswscale.9.dylib" \
-        "@loader_path/libswscale.9.dylib" "$INSTALL_DIR/lib/libvideo_jni.dylib" || true
+    install_name_tool -change "$INSTALL_DIR/lib/$SWSCALE_DYLIB" \
+        "@loader_path/$SWSCALE_DYLIB" "$INSTALL_DIR/lib/libvideo_jni.dylib" || true
 
-    for lib in libavutil.60.dylib libswresample.6.dylib libswscale.9.dylib libavcodec.62.dylib libeac3_jni.dylib libvideo_jni.dylib; do
+    for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" libeac3_jni.dylib libvideo_jni.dylib; do
         if otool -L "$INSTALL_DIR/lib/$lib" | grep -q "$INSTALL_DIR/lib"; then
             echo "ERROR: $lib still contains absolute install path" >&2
             otool -L "$INSTALL_DIR/lib/$lib" >&2
@@ -183,6 +220,20 @@ if [[ "$OSTYPE" == linux* ]]; then
             exit 1
         fi
     }
+    require_any_export() {
+        local lib="$1"
+        shift
+        local symbol
+        for symbol in "$@"; do
+            if readelf --dyn-syms --wide "$INSTALL_DIR/lib/$lib" | grep -q " $symbol@@\| $symbol$"; then
+                return 0
+            fi
+        done
+        echo "ERROR: $lib does not export any required dynamic symbols: $*" >&2
+        readelf -d "$INSTALL_DIR/lib/$lib" || true
+        readelf --dyn-syms --wide "$INSTALL_DIR/lib/$lib" | head -80 || true
+        exit 1
+    }
     require_needed() {
         local lib="$1" needed="$2"
         if ! readelf -d "$INSTALL_DIR/lib/$lib" | grep -q "Shared library: \[$needed"; then
@@ -192,14 +243,19 @@ if [[ "$OSTYPE" == linux* ]]; then
             exit 1
         fi
     }
-    require_export libavutil.so.60 av_buffer_allocz
-    require_export libavcodec.so.62 avcodec_send_packet
-    require_export libswscale.so.9 sws_scale
-    require_needed libeac3_jni.so libavcodec.so.62
-    require_needed libeac3_jni.so libavutil.so.60
-    require_needed libvideo_jni.so libavcodec.so.62
-    require_needed libvideo_jni.so libavutil.so.60
-    require_needed libvideo_jni.so libswscale.so.9
+    AVUTIL_SO="libavutil.so.${AVUTIL_MAJOR}"
+    SWRESAMPLE_SO="libswresample.so.${SWRESAMPLE_MAJOR}"
+    SWSCALE_SO="libswscale.so.${SWSCALE_MAJOR}"
+    AVCODEC_SO="libavcodec.so.${AVCODEC_MAJOR}"
+
+    require_any_export "$AVUTIL_SO" av_version_info av_frame_alloc av_frame_free
+    require_export "$AVCODEC_SO" avcodec_send_packet
+    require_export "$SWSCALE_SO" sws_scale
+    require_needed libeac3_jni.so "$AVCODEC_SO"
+    require_needed libeac3_jni.so "$AVUTIL_SO"
+    require_needed libvideo_jni.so "$AVCODEC_SO"
+    require_needed libvideo_jni.so "$AVUTIL_SO"
+    require_needed libvideo_jni.so "$SWSCALE_SO"
 fi
 
 # ── 4. 报告 ──
@@ -208,23 +264,28 @@ echo "=== Build complete ==="
 case "$OSTYPE" in
     darwin*)
         LIB_DIR="$INSTALL_DIR/bin"
-        LIBS_LIST=("libavutil" "libswresample" "libswscale" "libavcodec" "libeac3_jni" "libvideo_jni")
+        LIB_DIR="$INSTALL_DIR/bin"
+        LIBS_LIST=("libavutil.${AVUTIL_MAJOR}" "libswresample.${SWRESAMPLE_MAJOR}" "libswscale.${SWSCALE_MAJOR}" "libavcodec.${AVCODEC_MAJOR}" "libeac3_jni" "libvideo_jni")
         EXT=".dylib"
         ;;
     linux*)
         LIB_DIR="$INSTALL_DIR/lib"
-        LIBS_LIST=("libavutil" "libswresample" "libswscale" "libavcodec" "libeac3_jni" "libvideo_jni")
+        LIBS_LIST=("libavutil.so.${AVUTIL_MAJOR}" "libswresample.so.${SWRESAMPLE_MAJOR}" "libswscale.so.${SWSCALE_MAJOR}" "libavcodec.so.${AVCODEC_MAJOR}" "libeac3_jni" "libvideo_jni")
         EXT=".so"
         ;;
     msys*|cygwin*|win32)
         LIB_DIR="$INSTALL_DIR/bin"
-        LIBS_LIST=("avutil-60" "swresample-6" "swscale-9" "avcodec-62" "eac3_jni" "video_jni")
+        LIBS_LIST=("avutil-${AVUTIL_MAJOR}" "swresample-${SWRESAMPLE_MAJOR}" "swscale-${SWSCALE_MAJOR}" "avcodec-${AVCODEC_MAJOR}" "eac3_jni" "video_jni")
         EXT=".dll"
         ;;
 esac
 
 for lib in "${LIBS_LIST[@]}"; do
-    path="$LIB_DIR/${lib}${EXT}"
+    if [[ "$lib" == *.so.* ]]; then
+        path="$LIB_DIR/$lib"
+    else
+        path="$LIB_DIR/${lib}${EXT}"
+    fi
     if [ -f "$path" ]; then
         size=$(stat -c%s "$path" 2>/dev/null || stat -f%z "$path" 2>/dev/null)
         printf "  %-40s %6d bytes\n" "$(basename "$path")" "$size"
