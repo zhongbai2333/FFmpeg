@@ -8,6 +8,7 @@
  */
 
 #include <jni.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -51,6 +52,83 @@ typedef struct {
 static void throwException(JNIEnv *env, const char *msg) {
     jclass cls = (*env)->FindClass(env, "java/lang/RuntimeException");
     if (cls) (*env)->ThrowNew(env, cls, msg);
+}
+
+static int validateByteArrayRange(JNIEnv *env, jbyteArray data, jint offset, jint length) {
+    if (!data) {
+        throwException(env, "输入字节数组不能为空");
+        return 0;
+    }
+    if (offset < 0 || length < 0) {
+        throwException(env, "输入 offset/length 不能为负数");
+        return 0;
+    }
+    jsize array_length = (*env)->GetArrayLength(env, data);
+    if ((int64_t) offset + (int64_t) length > (int64_t) array_length) {
+        throwException(env, "输入 offset/length 超出字节数组范围");
+        return 0;
+    }
+    if (length > INT_MAX) {
+        throwException(env, "输入 packet 过大");
+        return 0;
+    }
+    return 1;
+}
+
+static int checkedRgbaSize(JNIEnv *env, int width, int height, int *out_size) {
+    if (width <= 0 || height <= 0) {
+        throwException(env, "RGBA 输出宽高无效");
+        return 0;
+    }
+    int64_t size = (int64_t) width * (int64_t) height * 4LL;
+    if (size <= 0 || size > INT_MAX) {
+        throwException(env, "RGBA 输出尺寸过大");
+        return 0;
+    }
+    *out_size = (int) size;
+    return 1;
+}
+
+static int checkedYuv420Size(JNIEnv *env, int width, int height, int *y_size, int *uv_w, int *uv_h, int *uv_size, int *total_size) {
+    if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0) {
+        throwException(env, "YUV420 输出需要有效的偶数宽高");
+        return 0;
+    }
+    int64_t y = (int64_t) width * (int64_t) height;
+    int64_t uw = width / 2;
+    int64_t uh = height / 2;
+    int64_t uv = uw * uh;
+    int64_t total = y + uv * 2LL;
+    if (y <= 0 || uv <= 0 || total <= 0 || total > INT_MAX) {
+        throwException(env, "YUV420 输出尺寸过大");
+        return 0;
+    }
+    *y_size = (int) y;
+    *uv_w = (int) uw;
+    *uv_h = (int) uh;
+    *uv_size = (int) uv;
+    *total_size = (int) total;
+    return 1;
+}
+
+static int checkedNv12Size(JNIEnv *env, int width, int height, int *y_size, int *uv_h, int *uv_stride, int *total_size) {
+    if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0) {
+        throwException(env, "NV12 输出需要有效的偶数宽高");
+        return 0;
+    }
+    int64_t y = (int64_t) width * (int64_t) height;
+    int64_t uh = height / 2;
+    int64_t stride = width;
+    int64_t total = y + stride * uh;
+    if (y <= 0 || total <= 0 || total > INT_MAX) {
+        throwException(env, "NV12 输出尺寸过大");
+        return 0;
+    }
+    *y_size = (int) y;
+    *uv_h = (int) uh;
+    *uv_stride = (int) stride;
+    *total_size = (int) total;
+    return 1;
 }
 
 JNIEXPORT jint JNICALL
@@ -348,7 +426,14 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
               h->rgb_frame->data,
               h->rgb_frame->linesize);
 
-    int rgba_size = dst_w * dst_h * 4;
+    int rgba_size;
+    if (!checkedRgbaSize(env, dst_w, dst_h, &rgba_size)) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        return NULL;
+    }
     jbyteArray result = (*env)->NewByteArray(env, rgba_size);
     if (!result) {
         av_frame_unref(h->decode_frame);
@@ -422,7 +507,14 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     int dst_w = h->target_width  > 0 ? h->target_width  : src_w;
     int dst_h = h->target_height > 0 ? h->target_height : src_h;
-    int rgba_size = dst_w * dst_h * 4;
+    int rgba_size;
+    if (!checkedRgbaSize(env, dst_w, dst_h, &rgba_size)) {
+        if (frame == h->transfer_frame) {
+            av_frame_unref(h->transfer_frame);
+        }
+        av_frame_unref(h->decode_frame);
+        return -1;
+    }
 
     if ((*env)->GetArrayLength(env, output) < rgba_size) {
         if (frame == h->transfer_frame) {
@@ -548,12 +640,16 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     int dst_w = h->target_width > 0 ? h->target_width : src_w;
     int dst_h = h->target_height > 0 ? h->target_height : src_h;
-    if ((dst_w & 1) != 0 || (dst_h & 1) != 0) {
+    int y_size;
+    int uv_w;
+    int uv_h;
+    int uv_size;
+    int yuv_size;
+    if (!checkedYuv420Size(env, dst_w, dst_h, &y_size, &uv_w, &uv_h, &uv_size, &yuv_size)) {
         av_frame_unref(h->decode_frame);
         if (frame == h->transfer_frame) {
             av_frame_unref(h->transfer_frame);
         }
-        throwException(env, "YUV420 输出需要偶数宽高");
         return NULL;
     }
 
@@ -604,11 +700,6 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
               h->yuv_frame->data,
               h->yuv_frame->linesize);
 
-    int y_size = dst_w * dst_h;
-    int uv_w = dst_w / 2;
-    int uv_h = dst_h / 2;
-    int uv_size = uv_w * uv_h;
-    int yuv_size = y_size + uv_size * 2;
     jbyteArray result = (*env)->NewByteArray(env, yuv_size);
     if (!result) {
         av_frame_unref(h->decode_frame);
@@ -692,12 +783,15 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     int dst_w = h->target_width > 0 ? h->target_width : src_w;
     int dst_h = h->target_height > 0 ? h->target_height : src_h;
-    if ((dst_w & 1) != 0 || (dst_h & 1) != 0) {
+    int y_size;
+    int uv_h;
+    int uv_stride;
+    int nv12_size;
+    if (!checkedNv12Size(env, dst_w, dst_h, &y_size, &uv_h, &uv_stride, &nv12_size)) {
         if (frame == h->transfer_frame) {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
-        throwException(env, "NV12 输出需要偶数宽高");
         return NULL;
     }
 
@@ -748,10 +842,6 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
               h->yuv_frame->data,
               h->yuv_frame->linesize);
 
-    int y_size = dst_w * dst_h;
-    int uv_h = dst_h / 2;
-    int uv_stride = dst_w;
-    int nv12_size = y_size + uv_stride * uv_h;
     jbyteArray result = (*env)->NewByteArray(env, nv12_size);
     if (!result) {
         if (frame == h->transfer_frame) {
@@ -840,19 +930,17 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     int dst_w = h->target_width > 0 ? h->target_width : src_w;
     int dst_h = h->target_height > 0 ? h->target_height : src_h;
-    if ((dst_w & 1) != 0 || (dst_h & 1) != 0) {
+    int y_size;
+    int uv_h;
+    int uv_stride;
+    int nv12_size;
+    if (!checkedNv12Size(env, dst_w, dst_h, &y_size, &uv_h, &uv_stride, &nv12_size)) {
         if (frame == h->transfer_frame) {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
-        throwException(env, "NV12 输出需要偶数宽高");
         return -1;
     }
-
-    int y_size = dst_w * dst_h;
-    int uv_h = dst_h / 2;
-    int uv_stride = dst_w;
-    int nv12_size = y_size + uv_stride * uv_h;
     if (capacity < nv12_size) {
         if (frame == h->transfer_frame) {
             av_frame_unref(h->transfer_frame);
@@ -972,6 +1060,10 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacket
     VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
     if (!h || !h->codec_ctx) {
         throwException(env, "解码器句柄无效");
+        return -1;
+    }
+
+    if (!validateByteArrayRange(env, data, offset, length)) {
         return -1;
     }
 

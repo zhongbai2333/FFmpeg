@@ -26,6 +26,7 @@
  */
 
 #include <jni.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -48,6 +49,27 @@ typedef struct {
 static void throwException(JNIEnv *env, const char *msg) {
     jclass cls = (*env)->FindClass(env, "java/lang/RuntimeException");
     if (cls) (*env)->ThrowNew(env, cls, msg);
+}
+
+static int validateByteArrayRange(JNIEnv *env, jbyteArray data, jint offset, jint length) {
+    if (!data) {
+        throwException(env, "输入字节数组不能为空");
+        return 0;
+    }
+    if (offset < 0 || length < 0) {
+        throwException(env, "输入 offset/length 不能为负数");
+        return 0;
+    }
+    jsize array_length = (*env)->GetArrayLength(env, data);
+    if ((int64_t) offset + (int64_t) length > (int64_t) array_length) {
+        throwException(env, "输入 offset/length 超出字节数组范围");
+        return 0;
+    }
+    if (length > INT_MAX) {
+        throwException(env, "输入 packet 过大");
+        return 0;
+    }
+    return 1;
 }
 
 /* ── decoderOpen ── */
@@ -107,6 +129,10 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_decode(
     DecoderHandle *h = (DecoderHandle *)(size_t) handle;
     if (!h || !h->ctx) {
         throwException(env, "解码器句柄无效");
+        return NULL;
+    }
+
+    if (!validateByteArrayRange(env, data, offset, length)) {
         return NULL;
     }
 
