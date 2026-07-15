@@ -23,173 +23,213 @@
 
 /* ── 解码器句柄 ── */
 
-typedef struct {
+typedef struct
+{
     AVCodecContext *codec_ctx;
-    AVPacket       *packet;
-    AVFrame        *decode_frame;
-    AVFrame        *transfer_frame;
-    AVFrame        *rgb_frame;
-    AVFrame        *yuv_frame;
-    AVBufferRef    *hw_device_ctx;
+    AVPacket *packet;
+    AVFrame *decode_frame;
+    AVFrame *transfer_frame;
+    AVFrame *rgb_frame;
+    AVFrame *yuv_frame;
+    AVBufferRef *hw_device_ctx;
     struct SwsContext *rgba_sws_ctx;
     struct SwsContext *yuv_sws_ctx;
     enum AVPixelFormat hw_pix_fmt;
     enum AVHWDeviceType hw_device_type;
-    int             rgba_sws_src_w, rgba_sws_src_h, rgba_sws_dst_w, rgba_sws_dst_h;
-    int             yuv_sws_src_w, yuv_sws_src_h, yuv_sws_dst_w, yuv_sws_dst_h;
+    int rgba_sws_src_w, rgba_sws_src_h, rgba_sws_dst_w, rgba_sws_dst_h;
+    int yuv_sws_src_w, yuv_sws_src_h, yuv_sws_dst_w, yuv_sws_dst_h;
     enum AVPixelFormat yuv_sws_dst_format;
-    int             target_width;
-    int             target_height;
-    int             original_width;
-    int             original_height;
-    int             use_hwaccel;
-    int64_t         last_frame_pts_nanos;
-    char            hwaccel_name[32];
+    int target_width;
+    int target_height;
+    int original_width;
+    int original_height;
+    int use_hwaccel;
+    int64_t last_frame_pts_nanos;
+    char hwaccel_name[32];
 } VideoDecoderHandle;
 
 /* ── 辅助：抛 Java 异常 ── */
 
-static void throwException(JNIEnv *env, const char *msg) {
+static void throwException(JNIEnv *env, const char *msg)
+{
     jclass cls = (*env)->FindClass(env, "java/lang/RuntimeException");
-    if (cls) (*env)->ThrowNew(env, cls, msg);
+    if (cls)
+        (*env)->ThrowNew(env, cls, msg);
 }
 
-static int validateByteArrayRange(JNIEnv *env, jbyteArray data, jint offset, jint length) {
-    if (!data) {
+static int validateByteArrayRange(JNIEnv *env, jbyteArray data, jint offset, jint length)
+{
+    if (!data)
+    {
         throwException(env, "输入字节数组不能为空");
         return 0;
     }
-    if (offset < 0 || length < 0) {
+    if (offset < 0 || length < 0)
+    {
         throwException(env, "输入 offset/length 不能为负数");
         return 0;
     }
     jsize array_length = (*env)->GetArrayLength(env, data);
-    if ((int64_t) offset + (int64_t) length > (int64_t) array_length) {
+    if ((int64_t)offset + (int64_t)length > (int64_t)array_length)
+    {
         throwException(env, "输入 offset/length 超出字节数组范围");
         return 0;
     }
-    if (length > INT_MAX) {
+    if (length > INT_MAX)
+    {
         throwException(env, "输入 packet 过大");
         return 0;
     }
     return 1;
 }
 
-static int checkedRgbaSize(JNIEnv *env, int width, int height, int *out_size) {
-    if (width <= 0 || height <= 0) {
+static int checkedRgbaSize(JNIEnv *env, int width, int height, int *out_size)
+{
+    if (width <= 0 || height <= 0)
+    {
         throwException(env, "RGBA 输出宽高无效");
         return 0;
     }
-    int64_t size = (int64_t) width * (int64_t) height * 4LL;
-    if (size <= 0 || size > INT_MAX) {
+    int64_t size = (int64_t)width * (int64_t)height * 4LL;
+    if (size <= 0 || size > INT_MAX)
+    {
         throwException(env, "RGBA 输出尺寸过大");
         return 0;
     }
-    *out_size = (int) size;
+    *out_size = (int)size;
     return 1;
 }
 
-static int checkedYuv420Size(JNIEnv *env, int width, int height, int *y_size, int *uv_w, int *uv_h, int *uv_size, int *total_size) {
-    if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0) {
+static int checkedYuv420Size(JNIEnv *env, int width, int height, int *y_size, int *uv_w, int *uv_h, int *uv_size, int *total_size)
+{
+    if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0)
+    {
         throwException(env, "YUV420 输出需要有效的偶数宽高");
         return 0;
     }
-    int64_t y = (int64_t) width * (int64_t) height;
+    int64_t y = (int64_t)width * (int64_t)height;
     int64_t uw = width / 2;
     int64_t uh = height / 2;
     int64_t uv = uw * uh;
     int64_t total = y + uv * 2LL;
-    if (y <= 0 || uv <= 0 || total <= 0 || total > INT_MAX) {
+    if (y <= 0 || uv <= 0 || total <= 0 || total > INT_MAX)
+    {
         throwException(env, "YUV420 输出尺寸过大");
         return 0;
     }
-    *y_size = (int) y;
-    *uv_w = (int) uw;
-    *uv_h = (int) uh;
-    *uv_size = (int) uv;
-    *total_size = (int) total;
+    *y_size = (int)y;
+    *uv_w = (int)uw;
+    *uv_h = (int)uh;
+    *uv_size = (int)uv;
+    *total_size = (int)total;
     return 1;
 }
 
-static int checkedNv12Size(JNIEnv *env, int width, int height, int *y_size, int *uv_h, int *uv_stride, int *total_size) {
-    if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0) {
+static int checkedNv12Size(JNIEnv *env, int width, int height, int *y_size, int *uv_h, int *uv_stride, int *total_size)
+{
+    if (width <= 0 || height <= 0 || (width & 1) != 0 || (height & 1) != 0)
+    {
         throwException(env, "NV12 输出需要有效的偶数宽高");
         return 0;
     }
-    int64_t y = (int64_t) width * (int64_t) height;
+    int64_t y = (int64_t)width * (int64_t)height;
     int64_t uh = height / 2;
     int64_t stride = width;
     int64_t total = y + stride * uh;
-    if (y <= 0 || total <= 0 || total > INT_MAX) {
+    if (y <= 0 || total <= 0 || total > INT_MAX)
+    {
         throwException(env, "NV12 输出尺寸过大");
         return 0;
     }
-    *y_size = (int) y;
-    *uv_h = (int) uh;
-    *uv_stride = (int) stride;
-    *total_size = (int) total;
+    *y_size = (int)y;
+    *uv_h = (int)uh;
+    *uv_stride = (int)stride;
+    *total_size = (int)total;
     return 1;
 }
 
 JNIEXPORT jint JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacketWithPts(
-        JNIEnv *env, jclass cls, jlong handle,
-        jbyteArray data, jint offset, jint length, jlong pts_nanos);
+    JNIEnv *env, jclass cls, jlong handle,
+    jbyteArray data, jint offset, jint length, jlong pts_nanos);
 
-static enum AVPixelFormat getHwFormat(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts) {
-    VideoDecoderHandle *h = (VideoDecoderHandle *) ctx->opaque;
-    if (!h) {
+static enum AVPixelFormat getHwFormat(AVCodecContext *ctx, const enum AVPixelFormat *pix_fmts)
+{
+    VideoDecoderHandle *h = (VideoDecoderHandle *)ctx->opaque;
+    if (!h)
+    {
         return pix_fmts[0];
     }
-    for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++) {
-        if (*p == h->hw_pix_fmt) {
+    for (const enum AVPixelFormat *p = pix_fmts; *p != AV_PIX_FMT_NONE; p++)
+    {
+        if (*p == h->hw_pix_fmt)
+        {
             return *p;
         }
     }
     return pix_fmts[0];
 }
 
-static enum AVHWDeviceType requestedDeviceType(const char *name) {
-    if (!name || !name[0] || strcmp(name, "auto") == 0) {
+static enum AVHWDeviceType requestedDeviceType(const char *name)
+{
+    if (!name || !name[0] || strcmp(name, "auto") == 0)
+    {
         return AV_HWDEVICE_TYPE_NONE;
     }
     return av_hwdevice_find_type_by_name(name);
 }
 
-static void setHwaccelFallback(VideoDecoderHandle *h, const char *reason) {
-    if (!h) {
+static void setHwaccelFallback(VideoDecoderHandle *h, const char *reason)
+{
+    if (!h)
+    {
         return;
     }
     snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "cpu(%s)", reason ? reason : "hwaccel-failed");
 }
 
 static int tryEnableHwaccel(const AVCodec *codec, AVCodecContext *ctx, VideoDecoderHandle *h,
-        enum AVHWDeviceType requested) {
+                            enum AVHWDeviceType requested)
+{
     int config_count = 0;
     int requested_matches = 0;
     int device_ctx_matches = 0;
     int create_failures = 0;
-    for (int i = 0;; i++) {
+    for (int i = 0;; i++)
+    {
         const AVCodecHWConfig *config = avcodec_get_hw_config(codec, i);
-        if (!config) {
+        if (!config)
+        {
             break;
         }
         config_count++;
-        if (requested == AV_HWDEVICE_TYPE_NONE || config->device_type == requested) {
+        if (requested == AV_HWDEVICE_TYPE_NONE || config->device_type == requested)
+        {
             requested_matches++;
         }
-        if (!(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX)) {
+        if (!(config->methods & AV_CODEC_HW_CONFIG_METHOD_HW_DEVICE_CTX))
+        {
             continue;
         }
-        if (requested != AV_HWDEVICE_TYPE_NONE && config->device_type != requested) {
+        if (requested != AV_HWDEVICE_TYPE_NONE && config->device_type != requested)
+        {
             continue;
         }
         device_ctx_matches++;
 
         AVBufferRef *device = NULL;
-        if (av_hwdevice_ctx_create(&device, config->device_type, NULL, NULL, 0) < 0) {
+        if (av_hwdevice_ctx_create(&device, config->device_type, NULL, NULL, 0) < 0)
+        {
             create_failures++;
             continue;
+        }
+
+        AVBufferRef *codec_device = av_buffer_ref(device);
+        if (!codec_device)
+        {
+            av_buffer_unref(&device);
+            setHwaccelFallback(h, "device-ref-failed");
+            return 0;
         }
 
         h->hw_device_ctx = device;
@@ -197,69 +237,84 @@ static int tryEnableHwaccel(const AVCodec *codec, AVCodecContext *ctx, VideoDeco
         h->hw_device_type = config->device_type;
         h->use_hwaccel = 1;
         const char *device_name = av_hwdevice_get_type_name(config->device_type);
-        if (device_name) {
+        if (device_name)
+        {
             snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", device_name);
         }
-        ctx->hw_device_ctx = av_buffer_ref(device);
+        ctx->hw_device_ctx = codec_device;
         ctx->get_format = getHwFormat;
         ctx->opaque = h;
         return 1;
     }
-    if (config_count == 0) {
+    if (config_count == 0)
+    {
         setHwaccelFallback(h, "no-codec-hw-config");
-    } else if (requested_matches == 0) {
+    }
+    else if (requested_matches == 0)
+    {
         setHwaccelFallback(h, "requested-device-not-built");
-    } else if (device_ctx_matches == 0) {
+    }
+    else if (device_ctx_matches == 0)
+    {
         setHwaccelFallback(h, "no-hw-device-ctx-config");
-    } else if (create_failures > 0) {
+    }
+    else if (create_failures > 0)
+    {
         setHwaccelFallback(h, "device-create-failed");
-    } else {
+    }
+    else
+    {
         setHwaccelFallback(h, "hwaccel-unavailable");
     }
     return 0;
 }
 
 static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, jint target_height,
-        const char *hwaccel_name) {
+                                 const char *hwaccel_name)
+{
     enum AVCodecID av_codec_id;
-    switch (codec_id) {
-        case 12:
-            av_codec_id = AV_CODEC_ID_HEVC;
-            break;
-        case 7:
-        default:
-            av_codec_id = AV_CODEC_ID_H264;
-            break;
+    switch (codec_id)
+    {
+    case 12:
+        av_codec_id = AV_CODEC_ID_HEVC;
+        break;
+    case 7:
+    default:
+        av_codec_id = AV_CODEC_ID_H264;
+        break;
     }
 
     const AVCodec *codec = avcodec_find_decoder(av_codec_id);
-    if (!codec) {
+    if (!codec)
+    {
         throwException(env, av_codec_id == AV_CODEC_ID_HEVC
-                ? "FFmpeg 未包含 HEVC 解码器"
-                : "FFmpeg 未包含 H.264 解码器");
+                                ? "FFmpeg 未包含 HEVC 解码器"
+                                : "FFmpeg 未包含 H.264 解码器");
         return 0;
     }
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *) calloc(1, sizeof(VideoDecoderHandle));
-    if (!h) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)calloc(1, sizeof(VideoDecoderHandle));
+    if (!h)
+    {
         throwException(env, "分配 VideoDecoderHandle 失败");
         return 0;
     }
 
     AVCodecContext *ctx = avcodec_alloc_context3(codec);
-    if (!ctx) {
+    if (!ctx)
+    {
         free(h);
         throwException(env, "分配 AVCodecContext 失败");
         return 0;
     }
 
-    h->codec_ctx     = ctx;
-    h->packet        = av_packet_alloc();
-    h->decode_frame  = av_frame_alloc();
+    h->codec_ctx = ctx;
+    h->packet = av_packet_alloc();
+    h->decode_frame = av_frame_alloc();
     h->transfer_frame = av_frame_alloc();
-    h->rgb_frame     = av_frame_alloc();
-    h->yuv_frame     = av_frame_alloc();
-    h->target_width  = target_width;
+    h->rgb_frame = av_frame_alloc();
+    h->yuv_frame = av_frame_alloc();
+    h->target_width = target_width;
     h->target_height = target_height;
     h->hw_pix_fmt = AV_PIX_FMT_NONE;
     h->hw_device_type = AV_HWDEVICE_TYPE_NONE;
@@ -267,7 +322,8 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     h->last_frame_pts_nanos = AV_NOPTS_VALUE;
     snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", "cpu");
 
-    if (!h->packet || !h->decode_frame || !h->transfer_frame || !h->rgb_frame || !h->yuv_frame) {
+    if (!h->packet || !h->decode_frame || !h->transfer_frame || !h->rgb_frame || !h->yuv_frame)
+    {
         av_packet_free(&h->packet);
         av_frame_free(&h->decode_frame);
         av_frame_free(&h->transfer_frame);
@@ -280,32 +336,35 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     }
 
     enum AVHWDeviceType requested = requestedDeviceType(hwaccel_name);
-    if (hwaccel_name && hwaccel_name[0]
-            && strcmp(hwaccel_name, "none") != 0
-            && strcmp(hwaccel_name, "off") != 0) {
+    if (hwaccel_name && hwaccel_name[0] && strcmp(hwaccel_name, "none") != 0 && strcmp(hwaccel_name, "off") != 0)
+    {
         tryEnableHwaccel(codec, ctx, h, requested);
     }
 
-    if (avcodec_open2(ctx, codec, NULL) < 0) {
-        if (h->hw_device_ctx) av_buffer_unref(&h->hw_device_ctx);
+    if (avcodec_open2(ctx, codec, NULL) < 0)
+    {
+        if (h->hw_device_ctx)
+            av_buffer_unref(&h->hw_device_ctx);
         av_packet_free(&h->packet);
         av_frame_free(&h->decode_frame);
         av_frame_free(&h->transfer_frame);
         av_frame_free(&h->rgb_frame);
+        av_frame_free(&h->yuv_frame);
         avcodec_free_context(&h->codec_ctx);
         free(h);
         throwException(env, "avcodec_open2 失败");
         return 0;
     }
 
-    return (jlong)(size_t) h;
+    return (jlong)(size_t)h;
 }
 
 /* ── decoderOpen: 兼容当前 Java 侧 H.264-only 接口 ── */
 
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpen(
-        JNIEnv *env, jclass cls, jint target_width, jint target_height) {
+    JNIEnv *env, jclass cls, jint target_width, jint target_height)
+{
     return decoderOpenForCodec(env, 7, target_width, target_height, "none");
 }
 
@@ -313,16 +372,23 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpe
 
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpenForCodec(
-        JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height) {
+    JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height)
+{
     return decoderOpenForCodec(env, codec_id, target_width, target_height, "none");
 }
 
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpenForCodecWithHwaccel(
-        JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height, jstring hwaccel) {
+    JNIEnv *env, jclass cls, jint codec_id, jint target_width, jint target_height, jstring hwaccel)
+{
     const char *hw = hwaccel ? (*env)->GetStringUTFChars(env, hwaccel, NULL) : NULL;
+    if (hwaccel && !hw)
+    {
+        return 0;
+    }
     jlong handle = decoderOpenForCodec(env, codec_id, target_width, target_height, hw ? hw : "auto");
-    if (hw) {
+    if (hw)
+    {
         (*env)->ReleaseStringUTFChars(env, hwaccel, hw);
     }
     return handle;
@@ -330,12 +396,15 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpe
 
 /* ── getVideoFrame ── */
 
-static void rememberFramePts(VideoDecoderHandle *h, AVFrame *frame) {
-    if (!h || !frame) {
+static void rememberFramePts(VideoDecoderHandle *h, AVFrame *frame)
+{
+    if (!h || !frame)
+    {
         return;
     }
     int64_t pts = frame->best_effort_timestamp;
-    if (pts == AV_NOPTS_VALUE) {
+    if (pts == AV_NOPTS_VALUE)
+    {
         pts = frame->pts;
     }
     h->last_frame_pts_nanos = pts != AV_NOPTS_VALUE ? pts : AV_NOPTS_VALUE;
@@ -343,17 +412,21 @@ static void rememberFramePts(VideoDecoderHandle *h, AVFrame *frame) {
 
 JNIEXPORT jbyteArray JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrame(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->codec_ctx) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx)
+    {
         throwException(env, "解码器句柄无效");
         return NULL;
     }
 
     int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
-    if (ret < 0) {
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    if (ret < 0)
+    {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        {
             return NULL;
         }
         return NULL;
@@ -361,9 +434,12 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     AVFrame *frame = h->decode_frame;
     rememberFramePts(h, h->decode_frame);
-    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt)
+    {
         av_frame_unref(h->transfer_frame);
-        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0)
+        {
+            av_frame_unref(h->transfer_frame);
             av_frame_unref(h->decode_frame);
             return NULL;
         }
@@ -373,46 +449,64 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     int src_w = frame->width;
     int src_h = frame->height;
 
-    if (src_w <= 0 || src_h <= 0) {
+    if (src_w <= 0 || src_h <= 0)
+    {
+        if (frame == h->transfer_frame)
+        {
+            av_frame_unref(h->transfer_frame);
+        }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
 
-    if (h->original_width != src_w || h->original_height != src_h) {
-        h->original_width  = src_w;
+    if (h->original_width != src_w || h->original_height != src_h)
+    {
+        h->original_width = src_w;
         h->original_height = src_h;
     }
 
-    int dst_w = h->target_width  > 0 ? h->target_width  : src_w;
+    int dst_w = h->target_width > 0 ? h->target_width : src_w;
     int dst_h = h->target_height > 0 ? h->target_height : src_h;
 
-    if (!h->rgba_sws_ctx || h->rgba_sws_src_w != src_w || h->rgba_sws_src_h != src_h
-            || h->rgba_sws_dst_w != dst_w || h->rgba_sws_dst_h != dst_h) {
-        if (h->rgba_sws_ctx) {
+    if (!h->rgba_sws_ctx || h->rgba_sws_src_w != src_w || h->rgba_sws_src_h != src_h || h->rgba_sws_dst_w != dst_w || h->rgba_sws_dst_h != dst_h)
+    {
+        if (h->rgba_sws_ctx)
+        {
             sws_freeContext(h->rgba_sws_ctx);
         }
         h->rgba_sws_ctx = sws_getContext(
             src_w, src_h, frame->format,
-                dst_w, dst_h, AV_PIX_FMT_RGBA,
-                SWS_BILINEAR, NULL, NULL, NULL);
+            dst_w, dst_h, AV_PIX_FMT_RGBA,
+            SWS_BILINEAR, NULL, NULL, NULL);
         h->rgba_sws_src_w = src_w;
         h->rgba_sws_src_h = src_h;
         h->rgba_sws_dst_w = dst_w;
         h->rgba_sws_dst_h = dst_h;
 
-        if (!h->rgba_sws_ctx) {
+        if (!h->rgba_sws_ctx)
+        {
+            if (frame == h->transfer_frame)
+            {
+                av_frame_unref(h->transfer_frame);
+            }
             av_frame_unref(h->decode_frame);
             throwException(env, "sws_getContext 失败");
             return NULL;
         }
     }
 
-    if (!h->rgb_frame->data[0] || h->rgb_frame->width != dst_w || h->rgb_frame->height != dst_h) {
+    if (!h->rgb_frame->data[0] || h->rgb_frame->width != dst_w || h->rgb_frame->height != dst_h)
+    {
         av_frame_unref(h->rgb_frame);
         h->rgb_frame->format = AV_PIX_FMT_RGBA;
-        h->rgb_frame->width  = dst_w;
+        h->rgb_frame->width = dst_w;
         h->rgb_frame->height = dst_h;
-        if (av_frame_get_buffer(h->rgb_frame, 1) < 0) {
+        if (av_frame_get_buffer(h->rgb_frame, 1) < 0)
+        {
+            if (frame == h->transfer_frame)
+            {
+                av_frame_unref(h->transfer_frame);
+            }
             av_frame_unref(h->decode_frame);
             throwException(env, "分配 RGB 缓冲区失败");
             return NULL;
@@ -420,28 +514,40 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     sws_scale(h->rgba_sws_ctx,
-              (const uint8_t * const *) frame->data,
+              (const uint8_t *const *)frame->data,
               frame->linesize,
               0, src_h,
               h->rgb_frame->data,
               h->rgb_frame->linesize);
 
     int rgba_size;
-    if (!checkedRgbaSize(env, dst_w, dst_h, &rgba_size)) {
-        if (frame == h->transfer_frame) {
+    if (!checkedRgbaSize(env, dst_w, dst_h, &rgba_size))
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
     jbyteArray result = (*env)->NewByteArray(env, rgba_size);
-    if (!result) {
+    if (!result)
+    {
+        if (frame == h->transfer_frame)
+        {
+            av_frame_unref(h->transfer_frame);
+        }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
 
     jbyte *dst = (*env)->GetByteArrayElements(env, result, NULL);
-    if (!dst) {
+    if (!dst)
+    {
+        if (frame == h->transfer_frame)
+        {
+            av_frame_unref(h->transfer_frame);
+        }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
@@ -450,13 +556,15 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     int dst_stride = dst_w * 4;
     const uint8_t *src = h->rgb_frame->data[0];
 
-    for (int y = 0; y < dst_h; y++) {
+    for (int y = 0; y < dst_h; y++)
+    {
         memcpy(dst + y * dst_stride, src + y * src_stride, dst_stride);
     }
 
     (*env)->ReleaseByteArrayElements(env, result, dst, 0);
 
-    if (frame == h->transfer_frame) {
+    if (frame == h->transfer_frame)
+    {
         av_frame_unref(h->transfer_frame);
     }
     av_frame_unref(h->decode_frame);
@@ -465,17 +573,21 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
 JNIEXPORT jint JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameInto(
-        JNIEnv *env, jclass cls, jlong handle, jbyteArray output) {
+    JNIEnv *env, jclass cls, jlong handle, jbyteArray output)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->codec_ctx || !output) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx || !output)
+    {
         throwException(env, "解码器句柄或输出缓冲区无效");
         return -1;
     }
 
     int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
-    if (ret < 0) {
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    if (ret < 0)
+    {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        {
             return 0;
         }
         return -1;
@@ -483,9 +595,11 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     AVFrame *frame = h->decode_frame;
     rememberFramePts(h, h->decode_frame);
-    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt)
+    {
         av_frame_unref(h->transfer_frame);
-        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0)
+        {
             av_frame_unref(h->decode_frame);
             return -1;
         }
@@ -495,29 +609,35 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     int src_w = frame->width;
     int src_h = frame->height;
 
-    if (src_w <= 0 || src_h <= 0) {
+    if (src_w <= 0 || src_h <= 0)
+    {
         av_frame_unref(h->decode_frame);
         return -1;
     }
 
-    if (h->original_width != src_w || h->original_height != src_h) {
-        h->original_width  = src_w;
+    if (h->original_width != src_w || h->original_height != src_h)
+    {
+        h->original_width = src_w;
         h->original_height = src_h;
     }
 
-    int dst_w = h->target_width  > 0 ? h->target_width  : src_w;
+    int dst_w = h->target_width > 0 ? h->target_width : src_w;
     int dst_h = h->target_height > 0 ? h->target_height : src_h;
     int rgba_size;
-    if (!checkedRgbaSize(env, dst_w, dst_h, &rgba_size)) {
-        if (frame == h->transfer_frame) {
+    if (!checkedRgbaSize(env, dst_w, dst_h, &rgba_size))
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
         return -1;
     }
 
-    if ((*env)->GetArrayLength(env, output) < rgba_size) {
-        if (frame == h->transfer_frame) {
+    if ((*env)->GetArrayLength(env, output) < rgba_size)
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
@@ -525,22 +645,25 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         return -1;
     }
 
-    if (!h->rgba_sws_ctx || h->rgba_sws_src_w != src_w || h->rgba_sws_src_h != src_h
-            || h->rgba_sws_dst_w != dst_w || h->rgba_sws_dst_h != dst_h) {
-        if (h->rgba_sws_ctx) {
+    if (!h->rgba_sws_ctx || h->rgba_sws_src_w != src_w || h->rgba_sws_src_h != src_h || h->rgba_sws_dst_w != dst_w || h->rgba_sws_dst_h != dst_h)
+    {
+        if (h->rgba_sws_ctx)
+        {
             sws_freeContext(h->rgba_sws_ctx);
         }
         h->rgba_sws_ctx = sws_getContext(
             src_w, src_h, frame->format,
-                dst_w, dst_h, AV_PIX_FMT_RGBA,
-                SWS_BILINEAR, NULL, NULL, NULL);
+            dst_w, dst_h, AV_PIX_FMT_RGBA,
+            SWS_BILINEAR, NULL, NULL, NULL);
         h->rgba_sws_src_w = src_w;
         h->rgba_sws_src_h = src_h;
         h->rgba_sws_dst_w = dst_w;
         h->rgba_sws_dst_h = dst_h;
 
-        if (!h->rgba_sws_ctx) {
-            if (frame == h->transfer_frame) {
+        if (!h->rgba_sws_ctx)
+        {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             av_frame_unref(h->decode_frame);
@@ -549,13 +672,16 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         }
     }
 
-    if (!h->rgb_frame->data[0] || h->rgb_frame->width != dst_w || h->rgb_frame->height != dst_h) {
+    if (!h->rgb_frame->data[0] || h->rgb_frame->width != dst_w || h->rgb_frame->height != dst_h)
+    {
         av_frame_unref(h->rgb_frame);
         h->rgb_frame->format = AV_PIX_FMT_RGBA;
-        h->rgb_frame->width  = dst_w;
+        h->rgb_frame->width = dst_w;
         h->rgb_frame->height = dst_h;
-        if (av_frame_get_buffer(h->rgb_frame, 1) < 0) {
-            if (frame == h->transfer_frame) {
+        if (av_frame_get_buffer(h->rgb_frame, 1) < 0)
+        {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             av_frame_unref(h->decode_frame);
@@ -565,15 +691,17 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     sws_scale(h->rgba_sws_ctx,
-              (const uint8_t * const *) frame->data,
+              (const uint8_t *const *)frame->data,
               frame->linesize,
               0, src_h,
               h->rgb_frame->data,
               h->rgb_frame->linesize);
 
     jbyte *dst = (*env)->GetByteArrayElements(env, output, NULL);
-    if (!dst) {
-        if (frame == h->transfer_frame) {
+    if (!dst)
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
@@ -584,13 +712,15 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     int dst_stride = dst_w * 4;
     const uint8_t *src = h->rgb_frame->data[0];
 
-    for (int y = 0; y < dst_h; y++) {
+    for (int y = 0; y < dst_h; y++)
+    {
         memcpy(dst + y * dst_stride, src + y * src_stride, dst_stride);
     }
 
     (*env)->ReleaseByteArrayElements(env, output, dst, 0);
 
-    if (frame == h->transfer_frame) {
+    if (frame == h->transfer_frame)
+    {
         av_frame_unref(h->transfer_frame);
     }
     av_frame_unref(h->decode_frame);
@@ -599,17 +729,21 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
 JNIEXPORT jbyteArray JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameYuv420(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->codec_ctx) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx)
+    {
         throwException(env, "解码器句柄无效");
         return NULL;
     }
 
     int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
-    if (ret < 0) {
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    if (ret < 0)
+    {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        {
             return NULL;
         }
         return NULL;
@@ -617,9 +751,12 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     AVFrame *frame = h->decode_frame;
     rememberFramePts(h, h->decode_frame);
-    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt)
+    {
         av_frame_unref(h->transfer_frame);
-        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0)
+        {
+            av_frame_unref(h->transfer_frame);
             av_frame_unref(h->decode_frame);
             return NULL;
         }
@@ -628,12 +765,18 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     int src_w = frame->width;
     int src_h = frame->height;
-    if (src_w <= 0 || src_h <= 0) {
+    if (src_w <= 0 || src_h <= 0)
+    {
+        if (frame == h->transfer_frame)
+        {
+            av_frame_unref(h->transfer_frame);
+        }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
 
-    if (h->original_width != src_w || h->original_height != src_h) {
+    if (h->original_width != src_w || h->original_height != src_h)
+    {
         h->original_width = src_w;
         h->original_height = src_h;
     }
@@ -645,31 +788,35 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     int uv_h;
     int uv_size;
     int yuv_size;
-    if (!checkedYuv420Size(env, dst_w, dst_h, &y_size, &uv_w, &uv_h, &uv_size, &yuv_size)) {
+    if (!checkedYuv420Size(env, dst_w, dst_h, &y_size, &uv_w, &uv_h, &uv_size, &yuv_size))
+    {
         av_frame_unref(h->decode_frame);
-        if (frame == h->transfer_frame) {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         return NULL;
     }
 
-    if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h
-            || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h
-            || h->yuv_sws_dst_format != AV_PIX_FMT_YUV420P) {
-        if (h->yuv_sws_ctx) {
+    if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h || h->yuv_sws_dst_format != AV_PIX_FMT_YUV420P)
+    {
+        if (h->yuv_sws_ctx)
+        {
             sws_freeContext(h->yuv_sws_ctx);
         }
         h->yuv_sws_ctx = sws_getContext(src_w, src_h, frame->format,
-                dst_w, dst_h, AV_PIX_FMT_YUV420P,
-                SWS_BILINEAR, NULL, NULL, NULL);
+                                        dst_w, dst_h, AV_PIX_FMT_YUV420P,
+                                        SWS_BILINEAR, NULL, NULL, NULL);
         h->yuv_sws_src_w = src_w;
         h->yuv_sws_src_h = src_h;
         h->yuv_sws_dst_w = dst_w;
         h->yuv_sws_dst_h = dst_h;
         h->yuv_sws_dst_format = AV_PIX_FMT_YUV420P;
-        if (!h->yuv_sws_ctx) {
+        if (!h->yuv_sws_ctx)
+        {
             av_frame_unref(h->decode_frame);
-            if (frame == h->transfer_frame) {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             throwException(env, "sws_getContext(YUV420) 失败");
@@ -677,15 +824,17 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         }
     }
 
-    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_YUV420P
-            || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h) {
+    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_YUV420P || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h)
+    {
         av_frame_unref(h->yuv_frame);
         h->yuv_frame->format = AV_PIX_FMT_YUV420P;
         h->yuv_frame->width = dst_w;
         h->yuv_frame->height = dst_h;
-        if (av_frame_get_buffer(h->yuv_frame, 1) < 0) {
+        if (av_frame_get_buffer(h->yuv_frame, 1) < 0)
+        {
             av_frame_unref(h->decode_frame);
-            if (frame == h->transfer_frame) {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             throwException(env, "分配 YUV420 缓冲区失败");
@@ -694,43 +843,50 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     sws_scale(h->yuv_sws_ctx,
-              (const uint8_t * const *) frame->data,
+              (const uint8_t *const *)frame->data,
               frame->linesize,
               0, src_h,
               h->yuv_frame->data,
               h->yuv_frame->linesize);
 
     jbyteArray result = (*env)->NewByteArray(env, yuv_size);
-    if (!result) {
+    if (!result)
+    {
         av_frame_unref(h->decode_frame);
-        if (frame == h->transfer_frame) {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         return NULL;
     }
 
     jbyte *dst = (*env)->GetByteArrayElements(env, result, NULL);
-    if (!dst) {
+    if (!dst)
+    {
         av_frame_unref(h->decode_frame);
-        if (frame == h->transfer_frame) {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         return NULL;
     }
 
-    for (int y = 0; y < dst_h; y++) {
+    for (int y = 0; y < dst_h; y++)
+    {
         memcpy(dst + y * dst_w, h->yuv_frame->data[0] + y * h->yuv_frame->linesize[0], dst_w);
     }
     jbyte *u_dst = dst + y_size;
     jbyte *v_dst = u_dst + uv_size;
-    for (int y = 0; y < uv_h; y++) {
+    for (int y = 0; y < uv_h; y++)
+    {
         memcpy(u_dst + y * uv_w, h->yuv_frame->data[1] + y * h->yuv_frame->linesize[1], uv_w);
         memcpy(v_dst + y * uv_w, h->yuv_frame->data[2] + y * h->yuv_frame->linesize[2], uv_w);
     }
 
     (*env)->ReleaseByteArrayElements(env, result, dst, 0);
 
-    if (frame == h->transfer_frame) {
+    if (frame == h->transfer_frame)
+    {
         av_frame_unref(h->transfer_frame);
     }
     av_frame_unref(h->decode_frame);
@@ -739,17 +895,21 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
 JNIEXPORT jbyteArray JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameNv12(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->codec_ctx) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx)
+    {
         throwException(env, "解码器句柄无效");
         return NULL;
     }
 
     int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
-    if (ret < 0) {
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    if (ret < 0)
+    {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        {
             return NULL;
         }
         return NULL;
@@ -757,9 +917,11 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     AVFrame *frame = h->decode_frame;
     rememberFramePts(h, h->decode_frame);
-    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt)
+    {
         av_frame_unref(h->transfer_frame);
-        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0)
+        {
             av_frame_unref(h->decode_frame);
             return NULL;
         }
@@ -768,15 +930,18 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     int src_w = frame->width;
     int src_h = frame->height;
-    if (src_w <= 0 || src_h <= 0) {
-        if (frame == h->transfer_frame) {
+    if (src_w <= 0 || src_h <= 0)
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
 
-    if (h->original_width != src_w || h->original_height != src_h) {
+    if (h->original_width != src_w || h->original_height != src_h)
+    {
         h->original_width = src_w;
         h->original_height = src_h;
     }
@@ -787,30 +952,34 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     int uv_h;
     int uv_stride;
     int nv12_size;
-    if (!checkedNv12Size(env, dst_w, dst_h, &y_size, &uv_h, &uv_stride, &nv12_size)) {
-        if (frame == h->transfer_frame) {
+    if (!checkedNv12Size(env, dst_w, dst_h, &y_size, &uv_h, &uv_stride, &nv12_size))
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
 
-    if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h
-            || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h
-            || h->yuv_sws_dst_format != AV_PIX_FMT_NV12) {
-        if (h->yuv_sws_ctx) {
+    if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h || h->yuv_sws_dst_format != AV_PIX_FMT_NV12)
+    {
+        if (h->yuv_sws_ctx)
+        {
             sws_freeContext(h->yuv_sws_ctx);
         }
         h->yuv_sws_ctx = sws_getContext(src_w, src_h, frame->format,
-                dst_w, dst_h, AV_PIX_FMT_NV12,
-                SWS_BILINEAR, NULL, NULL, NULL);
+                                        dst_w, dst_h, AV_PIX_FMT_NV12,
+                                        SWS_BILINEAR, NULL, NULL, NULL);
         h->yuv_sws_src_w = src_w;
         h->yuv_sws_src_h = src_h;
         h->yuv_sws_dst_w = dst_w;
         h->yuv_sws_dst_h = dst_h;
         h->yuv_sws_dst_format = AV_PIX_FMT_NV12;
-        if (!h->yuv_sws_ctx) {
-            if (frame == h->transfer_frame) {
+        if (!h->yuv_sws_ctx)
+        {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             av_frame_unref(h->decode_frame);
@@ -819,14 +988,16 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         }
     }
 
-    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_NV12
-            || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h) {
+    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_NV12 || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h)
+    {
         av_frame_unref(h->yuv_frame);
         h->yuv_frame->format = AV_PIX_FMT_NV12;
         h->yuv_frame->width = dst_w;
         h->yuv_frame->height = dst_h;
-        if (av_frame_get_buffer(h->yuv_frame, 1) < 0) {
-            if (frame == h->transfer_frame) {
+        if (av_frame_get_buffer(h->yuv_frame, 1) < 0)
+        {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             av_frame_unref(h->decode_frame);
@@ -836,15 +1007,17 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     sws_scale(h->yuv_sws_ctx,
-              (const uint8_t * const *) frame->data,
+              (const uint8_t *const *)frame->data,
               frame->linesize,
               0, src_h,
               h->yuv_frame->data,
               h->yuv_frame->linesize);
 
     jbyteArray result = (*env)->NewByteArray(env, nv12_size);
-    if (!result) {
-        if (frame == h->transfer_frame) {
+    if (!result)
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
@@ -852,25 +1025,30 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     jbyte *dst = (*env)->GetByteArrayElements(env, result, NULL);
-    if (!dst) {
-        if (frame == h->transfer_frame) {
+    if (!dst)
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
         return NULL;
     }
 
-    for (int y = 0; y < dst_h; y++) {
+    for (int y = 0; y < dst_h; y++)
+    {
         memcpy(dst + y * dst_w, h->yuv_frame->data[0] + y * h->yuv_frame->linesize[0], dst_w);
     }
     jbyte *uv_dst = dst + y_size;
-    for (int y = 0; y < uv_h; y++) {
+    for (int y = 0; y < uv_h; y++)
+    {
         memcpy(uv_dst + y * uv_stride, h->yuv_frame->data[1] + y * h->yuv_frame->linesize[1], uv_stride);
     }
 
     (*env)->ReleaseByteArrayElements(env, result, dst, 0);
 
-    if (frame == h->transfer_frame) {
+    if (frame == h->transfer_frame)
+    {
         av_frame_unref(h->transfer_frame);
     }
     av_frame_unref(h->decode_frame);
@@ -879,24 +1057,29 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
 JNIEXPORT jint JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFrameNv12IntoDirect(
-        JNIEnv *env, jclass cls, jlong handle, jobject output) {
+    JNIEnv *env, jclass cls, jlong handle, jobject output)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->codec_ctx || !output) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx || !output)
+    {
         throwException(env, "解码器句柄或 direct 输出缓冲区无效");
         return -1;
     }
 
     uint8_t *dst = (uint8_t *)(*env)->GetDirectBufferAddress(env, output);
     jlong capacity = (*env)->GetDirectBufferCapacity(env, output);
-    if (!dst || capacity <= 0) {
+    if (!dst || capacity <= 0)
+    {
         throwException(env, "NV12 输出缓冲区必须是 direct ByteBuffer");
         return -1;
     }
 
     int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
-    if (ret < 0) {
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    if (ret < 0)
+    {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        {
             return 0;
         }
         return -1;
@@ -904,9 +1087,11 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     AVFrame *frame = h->decode_frame;
     rememberFramePts(h, h->decode_frame);
-    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt) {
+    if (h->use_hwaccel && h->decode_frame->format == h->hw_pix_fmt)
+    {
         av_frame_unref(h->transfer_frame);
-        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0) {
+        if (av_hwframe_transfer_data(h->transfer_frame, h->decode_frame, 0) < 0)
+        {
             av_frame_unref(h->decode_frame);
             return -1;
         }
@@ -915,15 +1100,18 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
     int src_w = frame->width;
     int src_h = frame->height;
-    if (src_w <= 0 || src_h <= 0) {
-        if (frame == h->transfer_frame) {
+    if (src_w <= 0 || src_h <= 0)
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
         return -1;
     }
 
-    if (h->original_width != src_w || h->original_height != src_h) {
+    if (h->original_width != src_w || h->original_height != src_h)
+    {
         h->original_width = src_w;
         h->original_height = src_h;
     }
@@ -934,15 +1122,19 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     int uv_h;
     int uv_stride;
     int nv12_size;
-    if (!checkedNv12Size(env, dst_w, dst_h, &y_size, &uv_h, &uv_stride, &nv12_size)) {
-        if (frame == h->transfer_frame) {
+    if (!checkedNv12Size(env, dst_w, dst_h, &y_size, &uv_h, &uv_stride, &nv12_size))
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
         return -1;
     }
-    if (capacity < nv12_size) {
-        if (frame == h->transfer_frame) {
+    if (capacity < nv12_size)
+    {
+        if (frame == h->transfer_frame)
+        {
             av_frame_unref(h->transfer_frame);
         }
         av_frame_unref(h->decode_frame);
@@ -950,22 +1142,24 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         return -1;
     }
 
-    if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h
-            || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h
-            || h->yuv_sws_dst_format != AV_PIX_FMT_NV12) {
-        if (h->yuv_sws_ctx) {
+    if (!h->yuv_sws_ctx || h->yuv_sws_src_w != src_w || h->yuv_sws_src_h != src_h || h->yuv_sws_dst_w != dst_w || h->yuv_sws_dst_h != dst_h || h->yuv_sws_dst_format != AV_PIX_FMT_NV12)
+    {
+        if (h->yuv_sws_ctx)
+        {
             sws_freeContext(h->yuv_sws_ctx);
         }
         h->yuv_sws_ctx = sws_getContext(src_w, src_h, frame->format,
-                dst_w, dst_h, AV_PIX_FMT_NV12,
-                SWS_BILINEAR, NULL, NULL, NULL);
+                                        dst_w, dst_h, AV_PIX_FMT_NV12,
+                                        SWS_BILINEAR, NULL, NULL, NULL);
         h->yuv_sws_src_w = src_w;
         h->yuv_sws_src_h = src_h;
         h->yuv_sws_dst_w = dst_w;
         h->yuv_sws_dst_h = dst_h;
         h->yuv_sws_dst_format = AV_PIX_FMT_NV12;
-        if (!h->yuv_sws_ctx) {
-            if (frame == h->transfer_frame) {
+        if (!h->yuv_sws_ctx)
+        {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             av_frame_unref(h->decode_frame);
@@ -974,14 +1168,16 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
         }
     }
 
-    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_NV12
-            || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h) {
+    if (!h->yuv_frame->data[0] || h->yuv_frame->format != AV_PIX_FMT_NV12 || h->yuv_frame->width != dst_w || h->yuv_frame->height != dst_h)
+    {
         av_frame_unref(h->yuv_frame);
         h->yuv_frame->format = AV_PIX_FMT_NV12;
         h->yuv_frame->width = dst_w;
         h->yuv_frame->height = dst_h;
-        if (av_frame_get_buffer(h->yuv_frame, 1) < 0) {
-            if (frame == h->transfer_frame) {
+        if (av_frame_get_buffer(h->yuv_frame, 1) < 0)
+        {
+            if (frame == h->transfer_frame)
+            {
                 av_frame_unref(h->transfer_frame);
             }
             av_frame_unref(h->decode_frame);
@@ -991,21 +1187,24 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
     }
 
     sws_scale(h->yuv_sws_ctx,
-              (const uint8_t * const *) frame->data,
+              (const uint8_t *const *)frame->data,
               frame->linesize,
               0, src_h,
               h->yuv_frame->data,
               h->yuv_frame->linesize);
 
-    for (int y = 0; y < dst_h; y++) {
+    for (int y = 0; y < dst_h; y++)
+    {
         memcpy(dst + y * dst_w, h->yuv_frame->data[0] + y * h->yuv_frame->linesize[0], dst_w);
     }
     uint8_t *uv_dst = dst + y_size;
-    for (int y = 0; y < uv_h; y++) {
+    for (int y = 0; y < uv_h; y++)
+    {
         memcpy(uv_dst + y * uv_stride, h->yuv_frame->data[1] + y * h->yuv_frame->linesize[1], uv_stride);
     }
 
-    if (frame == h->transfer_frame) {
+    if (frame == h->transfer_frame)
+    {
         av_frame_unref(h->transfer_frame);
     }
     av_frame_unref(h->decode_frame);
@@ -1014,24 +1213,29 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getVideoFr
 
 JNIEXPORT jint JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_receiveFrameNoCopy(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->codec_ctx) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx)
+    {
         throwException(env, "解码器句柄无效");
         return -1;
     }
 
     int ret = avcodec_receive_frame(h->codec_ctx, h->decode_frame);
-    if (ret < 0) {
-        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF) {
+    if (ret < 0)
+    {
+        if (ret == AVERROR(EAGAIN) || ret == AVERROR_EOF)
+        {
             return 0;
         }
         return -1;
     }
 
-    if (h->original_width != h->decode_frame->width || h->original_height != h->decode_frame->height) {
-        h->original_width  = h->decode_frame->width;
+    if (h->original_width != h->decode_frame->width || h->original_height != h->decode_frame->height)
+    {
+        h->original_width = h->decode_frame->width;
         h->original_height = h->decode_frame->height;
     }
 
@@ -1045,54 +1249,64 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_receiveFra
 
 JNIEXPORT jint JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacket(
-        JNIEnv *env, jclass cls, jlong handle,
-        jbyteArray data, jint offset, jint length) {
+    JNIEnv *env, jclass cls, jlong handle,
+    jbyteArray data, jint offset, jint length)
+{
 
     return Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacketWithPts(
-        env, cls, handle, data, offset, length, (jlong) AV_NOPTS_VALUE);
+        env, cls, handle, data, offset, length, (jlong)AV_NOPTS_VALUE);
 }
 
 JNIEXPORT jint JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacketWithPts(
     JNIEnv *env, jclass cls, jlong handle,
-    jbyteArray data, jint offset, jint length, jlong pts_nanos) {
+    jbyteArray data, jint offset, jint length, jlong pts_nanos)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->codec_ctx) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx)
+    {
         throwException(env, "解码器句柄无效");
         return -1;
     }
 
-    if (!validateByteArrayRange(env, data, offset, length)) {
+    if (!validateByteArrayRange(env, data, offset, length))
+    {
         return -1;
     }
 
     jbyte *bytes = (*env)->GetByteArrayElements(env, data, NULL);
-    if (!bytes) {
+    if (!bytes)
+    {
         return -1;
     }
 
     av_packet_unref(h->packet);
     int ret = av_new_packet(h->packet, length);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
         return -1;
     }
     memcpy(h->packet->data, bytes + offset, length);
     (*env)->ReleaseByteArrayElements(env, data, bytes, JNI_ABORT);
 
-    if (pts_nanos >= 0) {
-        h->packet->pts = (int64_t) pts_nanos;
+    if (pts_nanos >= 0)
+    {
+        h->packet->pts = (int64_t)pts_nanos;
         h->packet->dts = AV_NOPTS_VALUE;
-        h->packet->time_base = (AVRational) { 1, 1000000000 };
-        h->codec_ctx->pkt_timebase = (AVRational) { 1, 1000000000 };
-    } else {
+        h->packet->time_base = (AVRational){1, 1000000000};
+        h->codec_ctx->pkt_timebase = (AVRational){1, 1000000000};
+    }
+    else
+    {
         h->packet->pts = AV_NOPTS_VALUE;
         h->packet->dts = AV_NOPTS_VALUE;
     }
 
     ret = avcodec_send_packet(h->codec_ctx, h->packet);
-    if (ret < 0) {
+    if (ret < 0)
+    {
         return -1;
     }
 
@@ -1101,33 +1315,44 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendPacket
 
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getLastFramePtsNanos(
-        JNIEnv *env, jclass cls, jlong handle) {
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h)
+    {
         return -1;
     }
-    return h->last_frame_pts_nanos != AV_NOPTS_VALUE ? (jlong) h->last_frame_pts_nanos : -1;
+    return h->last_frame_pts_nanos != AV_NOPTS_VALUE ? (jlong)h->last_frame_pts_nanos : -1;
 }
 
 /* ── flush ── */
 
 JNIEXPORT void JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_flush(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (h && h->codec_ctx) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (h && h->codec_ctx)
+    {
         avcodec_flush_buffers(h->codec_ctx);
+        av_packet_unref(h->packet);
+        av_frame_unref(h->decode_frame);
+        av_frame_unref(h->transfer_frame);
+        av_frame_unref(h->rgb_frame);
+        av_frame_unref(h->yuv_frame);
         h->last_frame_pts_nanos = AV_NOPTS_VALUE;
     }
 }
 
 JNIEXPORT jstring JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getHwaccelName(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h || !h->hwaccel_name[0]) {
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->hwaccel_name[0])
+    {
         return (*env)->NewStringUTF(env, "cpu");
     }
     return (*env)->NewStringUTF(env, h->hwaccel_name);
@@ -1137,20 +1362,31 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getHwaccel
 
 JNIEXPORT void JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_close(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h) return;
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h)
+        return;
 
-    if (h->rgba_sws_ctx) sws_freeContext(h->rgba_sws_ctx);
-    if (h->yuv_sws_ctx)  sws_freeContext(h->yuv_sws_ctx);
-    if (h->rgb_frame)    av_frame_free(&h->rgb_frame);
-    if (h->yuv_frame)    av_frame_free(&h->yuv_frame);
-    if (h->transfer_frame) av_frame_free(&h->transfer_frame);
-    if (h->decode_frame) av_frame_free(&h->decode_frame);
-    if (h->packet)       av_packet_free(&h->packet);
-    if (h->hw_device_ctx) av_buffer_unref(&h->hw_device_ctx);
-    if (h->codec_ctx)    avcodec_free_context(&h->codec_ctx);
+    if (h->rgba_sws_ctx)
+        sws_freeContext(h->rgba_sws_ctx);
+    if (h->yuv_sws_ctx)
+        sws_freeContext(h->yuv_sws_ctx);
+    if (h->rgb_frame)
+        av_frame_free(&h->rgb_frame);
+    if (h->yuv_frame)
+        av_frame_free(&h->yuv_frame);
+    if (h->transfer_frame)
+        av_frame_free(&h->transfer_frame);
+    if (h->decode_frame)
+        av_frame_free(&h->decode_frame);
+    if (h->packet)
+        av_packet_free(&h->packet);
+    if (h->hw_device_ctx)
+        av_buffer_unref(&h->hw_device_ctx);
+    if (h->codec_ctx)
+        avcodec_free_context(&h->codec_ctx);
     free(h);
 }
 
@@ -1158,10 +1394,12 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_close(
 
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getDimensions(
-        JNIEnv *env, jclass cls, jlong handle) {
+    JNIEnv *env, jclass cls, jlong handle)
+{
 
-    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t) handle;
-    if (!h) return 0;
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h)
+        return 0;
 
-    return ((jlong) h->original_width << 32) | (jlong) (h->original_height & 0xFFFFFFFFL);
+    return ((jlong)h->original_width << 32) | (jlong)(h->original_height & 0xFFFFFFFFL);
 }
