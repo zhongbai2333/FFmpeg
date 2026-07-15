@@ -45,6 +45,7 @@
 #include "intreadwrite.h"
 #include "macros.h"
 #include "mem.h"
+#include "mem_internal.h"
 
 #ifdef MALLOC_PREFIX
 
@@ -72,6 +73,65 @@ void  free(void *ptr);
  * Note that this will cost performance. */
 
 static atomic_size_t max_alloc_size = INT_MAX;
+static atomic_size_t memory_stats[AV_MEMORY_STATS_COUNT];
+
+static void update_peak(enum AVMemoryStatIndex peak_index, size_t value)
+{
+    size_t peak = atomic_load_explicit(&memory_stats[peak_index], memory_order_relaxed);
+    while (value > peak &&
+           !atomic_compare_exchange_weak_explicit(&memory_stats[peak_index], &peak, value,
+                                                  memory_order_relaxed, memory_order_relaxed))
+        ;
+}
+
+static void stats_add(enum AVMemoryStatIndex current_index,
+                      enum AVMemoryStatIndex peak_index, size_t value)
+{
+    size_t current = atomic_fetch_add_explicit(&memory_stats[current_index], value,
+                                               memory_order_relaxed) + value;
+    update_peak(peak_index, current);
+}
+
+static void stats_sub(enum AVMemoryStatIndex current_index, size_t value)
+{
+    atomic_fetch_sub_explicit(&memory_stats[current_index], value, memory_order_relaxed);
+}
+
+void av_get_memory_stats(uint64_t stats[AV_MEMORY_STATS_COUNT])
+{
+    int i;
+    if (!stats)
+        return;
+    for (i = 0; i < AV_MEMORY_STATS_COUNT; i++)
+        stats[i] = atomic_load_explicit(&memory_stats[i], memory_order_relaxed);
+}
+
+void ff_memory_d3d11_alloc(size_t textures, size_t surfaces, size_t logical_bytes)
+{
+    stats_add(AV_MEMORY_STAT_D3D11_TEXTURE_CURRENT, AV_MEMORY_STAT_D3D11_TEXTURE_PEAK, textures);
+    stats_add(AV_MEMORY_STAT_D3D11_SURFACE_CURRENT, AV_MEMORY_STAT_D3D11_SURFACE_PEAK, surfaces);
+    stats_add(AV_MEMORY_STAT_D3D11_LOGICAL_BYTES_CURRENT,
+              AV_MEMORY_STAT_D3D11_LOGICAL_BYTES_PEAK, logical_bytes);
+}
+
+void ff_memory_d3d11_free(size_t textures, size_t surfaces, size_t logical_bytes)
+{
+    stats_sub(AV_MEMORY_STAT_D3D11_TEXTURE_CURRENT, textures);
+    stats_sub(AV_MEMORY_STAT_D3D11_SURFACE_CURRENT, surfaces);
+    stats_sub(AV_MEMORY_STAT_D3D11_LOGICAL_BYTES_CURRENT, logical_bytes);
+}
+
+static size_t allocation_size(const void *ptr)
+{
+    size_t size;
+    memcpy(&size, (const uint8_t *)ptr - ALIGN, sizeof(size));
+    return size;
+}
+
+static void store_allocation_size(void *base, size_t size)
+{
+    memcpy(base, &size, sizeof(size));
+}
 
 void av_max_alloc(size_t max){
     atomic_store_explicit(&max_alloc_size, max, memory_order_relaxed);
@@ -97,22 +157,26 @@ static int size_mult(size_t a, size_t b, size_t *r)
 
 void *av_malloc(size_t size)
 {
-    void *ptr = NULL;
+    void *base = NULL;
+    void *ptr;
+    size_t backend_size = size ? size : 1;
+    size_t total;
 
-    if (size > atomic_load_explicit(&max_alloc_size, memory_order_relaxed))
+    if (size > atomic_load_explicit(&max_alloc_size, memory_order_relaxed) ||
+        backend_size > SIZE_MAX - ALIGN)
         return NULL;
+    total = backend_size + ALIGN;
 
 #if HAVE_POSIX_MEMALIGN
-    if (size) //OS X on SDK 10.6 has a broken posix_memalign implementation
-    if (posix_memalign(&ptr, ALIGN, size))
-        ptr = NULL;
+    if (posix_memalign(&base, ALIGN, total))
+        base = NULL;
 #elif HAVE_ALIGNED_MALLOC
-    ptr = _aligned_malloc(size, ALIGN);
+    base = _aligned_malloc(total, ALIGN);
 #elif HAVE_MEMALIGN
 #ifndef __DJGPP__
-    ptr = memalign(ALIGN, size);
+    base = memalign(ALIGN, total);
 #else
-    ptr = memalign(size, ALIGN);
+    base = memalign(total, ALIGN);
 #endif
     /* Why 64?
      * Indeed, we should align it:
@@ -139,35 +203,51 @@ void *av_malloc(size_t size)
      * BTW, malloc seems to do 8-byte alignment by default here.
      */
 #else
-    ptr = malloc(size);
+    base = malloc(total);
 #endif
-    if(!ptr && !size) {
-        size = 1;
-        ptr= av_malloc(1);
-    }
+    if (!base)
+        return NULL;
+    store_allocation_size(base, size);
+    ptr = (uint8_t *)base + ALIGN;
+    stats_add(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, AV_MEMORY_STAT_HEAP_PEAK_BYTES, size);
+    atomic_fetch_add_explicit(&memory_stats[AV_MEMORY_STAT_ALLOCATIONS], 1, memory_order_relaxed);
 #if CONFIG_MEMORY_POISONING
-    if (ptr)
-        memset(ptr, FF_MEMORY_POISON, size);
+    memset(ptr, FF_MEMORY_POISON, size);
 #endif
     return ptr;
 }
 
 void *av_realloc(void *ptr, size_t size)
 {
-    void *ret;
-    if (size > atomic_load_explicit(&max_alloc_size, memory_order_relaxed))
+    void *base = ptr ? (uint8_t *)ptr - ALIGN : NULL;
+    void *ret_base;
+    size_t old_size = ptr ? allocation_size(ptr) : 0;
+    size_t backend_size = size ? size : 1;
+    size_t total;
+    if (size > atomic_load_explicit(&max_alloc_size, memory_order_relaxed) ||
+        backend_size > SIZE_MAX - ALIGN)
         return NULL;
+    total = backend_size + ALIGN;
 
 #if HAVE_ALIGNED_MALLOC
-    ret = _aligned_realloc(ptr, size + !size, ALIGN);
+    ret_base = _aligned_realloc(base, total, ALIGN);
 #else
-    ret = realloc(ptr, size + !size);
+    ret_base = realloc(base, total);
 #endif
+    if (!ret_base)
+        return NULL;
+    store_allocation_size(ret_base, size);
+    if (size >= old_size)
+        stats_add(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, AV_MEMORY_STAT_HEAP_PEAK_BYTES,
+                  size - old_size);
+    else
+        stats_sub(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, old_size - size);
+    atomic_fetch_add_explicit(&memory_stats[AV_MEMORY_STAT_REALLOCATIONS], 1, memory_order_relaxed);
 #if CONFIG_MEMORY_POISONING
-    if (ret && !ptr)
-        memset(ret, FF_MEMORY_POISON, size);
+    if (!ptr)
+        memset((uint8_t *)ret_base + ALIGN, FF_MEMORY_POISON, size);
 #endif
-    return ret;
+    return (uint8_t *)ret_base + ALIGN;
 }
 
 void *av_realloc_f(void *ptr, size_t nelem, size_t elsize)
@@ -237,10 +317,18 @@ int av_reallocp_array(void *ptr, size_t nmemb, size_t size)
 
 void av_free(void *ptr)
 {
+    void *base;
+    size_t size;
+    if (!ptr)
+        return;
+    size = allocation_size(ptr);
+    base = (uint8_t *)ptr - ALIGN;
+    stats_sub(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, size);
+    atomic_fetch_add_explicit(&memory_stats[AV_MEMORY_STAT_FREES], 1, memory_order_relaxed);
 #if HAVE_ALIGNED_MALLOC
-    _aligned_free(ptr);
+    _aligned_free(base);
 #else
-    free(ptr);
+    free(base);
 #endif
 }
 

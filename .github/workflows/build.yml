@@ -212,6 +212,27 @@ jobs:
           done
         shell: bash
 
+      - name: Audit memory instrumentation exports
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            AVUTIL_LIB="$(find install/bin -maxdepth 1 -type f -iname 'avutil-*.dll' | head -n 1)"
+            VIDEO_JNI="install/bin/video_jni.dll"
+            objdump -p "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
+            objdump -p "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+          elif [ "${{ runner.os }}" = "macOS" ]; then
+            AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil*.dylib' | head -n 1)"
+            VIDEO_JNI="install/lib/libvideo_jni.dylib"
+            nm -gU "$AVUTIL_LIB" | grep -F '_av_get_memory_stats'
+            nm -gU "$VIDEO_JNI" | grep -F '_Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+          else
+            AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil.so*' | head -n 1)"
+            VIDEO_JNI="install/lib/libvideo_jni.so"
+            objdump -T "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
+            objdump -T "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+          fi
+        shell: bash
+
       # ── macOS Mach-O audit/fix: use @loader_path instead of GitHub Runner absolute paths ──
       - name: Fix macOS dylib install names
         if: runner.os == 'macOS'

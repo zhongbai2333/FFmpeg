@@ -23,6 +23,7 @@
 
 #include "config.h"
 
+#include <stddef.h>
 #include <stdint.h>
 #ifndef _MSC_VER
 #include <stdalign.h>
@@ -30,6 +31,9 @@
 
 #include "attributes.h"
 #include "macros.h"
+
+void ff_memory_d3d11_alloc(size_t textures, size_t surfaces, size_t logical_bytes);
+void ff_memory_d3d11_free(size_t textures, size_t surfaces, size_t logical_bytes);
 
 /**
  * @def DECLARE_ALIGNED(n,t,v)

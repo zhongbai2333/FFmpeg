@@ -32,6 +32,31 @@
 
 #include "attributes.h"
 
+/** Indices returned by av_get_memory_stats(). */
+enum AVMemoryStatIndex {
+    AV_MEMORY_STAT_HEAP_CURRENT_BYTES,
+    AV_MEMORY_STAT_HEAP_PEAK_BYTES,
+    AV_MEMORY_STAT_ALLOCATIONS,
+    AV_MEMORY_STAT_REALLOCATIONS,
+    AV_MEMORY_STAT_FREES,
+    AV_MEMORY_STAT_D3D11_TEXTURE_CURRENT,
+    AV_MEMORY_STAT_D3D11_TEXTURE_PEAK,
+    AV_MEMORY_STAT_D3D11_SURFACE_CURRENT,
+    AV_MEMORY_STAT_D3D11_SURFACE_PEAK,
+    AV_MEMORY_STAT_D3D11_LOGICAL_BYTES_CURRENT,
+    AV_MEMORY_STAT_D3D11_LOGICAL_BYTES_PEAK,
+    AV_MEMORY_STATS_COUNT
+};
+
+/**
+ * Read process-wide libavutil allocation statistics.
+ *
+ * Heap byte values are the requested sizes of live allocations made through
+ * the av_malloc family. D3D11 logical bytes are format-based estimates and do
+ * not include driver alignment, metadata, residency, or allocator overhead.
+ */
+void av_get_memory_stats(uint64_t stats[AV_MEMORY_STATS_COUNT]);
+
 /**
  * @addtogroup lavu_mem
  * Utilities for manipulating memory.

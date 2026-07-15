@@ -19,6 +19,7 @@
 #include <libavutil/error.h>
 #include <libavutil/hwcontext.h>
 #include <libavutil/imgutils.h>
+#include <libavutil/mem.h>
 #include <libswscale/swscale.h>
 
 /* ── 解码器句柄 ── */
@@ -47,6 +48,27 @@ typedef struct
     int64_t last_frame_pts_nanos;
     char hwaccel_name[32];
 } VideoDecoderHandle;
+
+JNIEXPORT jlongArray JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats(
+    JNIEnv *env, jclass cls)
+{
+    uint64_t stats[AV_MEMORY_STATS_COUNT];
+    jlong values[AV_MEMORY_STATS_COUNT];
+    jlongArray result;
+    int i;
+
+    (void)cls;
+    av_get_memory_stats(stats);
+    for (i = 0; i < AV_MEMORY_STATS_COUNT; i++)
+        values[i] = stats[i] > INT64_MAX ? INT64_MAX : (jlong)stats[i];
+
+    result = (*env)->NewLongArray(env, AV_MEMORY_STATS_COUNT);
+    if (!result)
+        return NULL;
+    (*env)->SetLongArrayRegion(env, result, 0, AV_MEMORY_STATS_COUNT, values);
+    return result;
+}
 
 /* ── 辅助：抛 Java 异常 ── */
 

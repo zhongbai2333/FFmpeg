@@ -37,6 +37,7 @@
 #include "hwcontext_internal.h"
 #include "imgutils.h"
 #include "mem.h"
+#include "mem_internal.h"
 #include "pixdesc.h"
 #include "pixfmt.h"
 #include "thread.h"
@@ -88,7 +89,48 @@ typedef struct D3D11VAFramesContext {
     DXGI_FORMAT format;
 
     ID3D11Texture2D *staging_texture;
+    size_t texture_logical_bytes;
+    size_t staging_logical_bytes;
+    int texture_tracked;
+    int staging_tracked;
 } D3D11VAFramesContext;
+
+static size_t d3d11va_logical_bytes(const D3D11_TEXTURE2D_DESC *desc)
+{
+    size_t pixels, numerator, denominator = 1;
+    if (!desc || !desc->Width || !desc->Height || !desc->ArraySize ||
+        desc->Width > SIZE_MAX / desc->Height)
+        return 0;
+    pixels = (size_t)desc->Width * desc->Height;
+    if (pixels > SIZE_MAX / desc->ArraySize)
+        return 0;
+    pixels *= desc->ArraySize;
+    switch (desc->Format) {
+    case DXGI_FORMAT_NV12:
+    case DXGI_FORMAT_420_OPAQUE:
+        numerator = 3; denominator = 2; break;
+    case DXGI_FORMAT_P010:
+    case DXGI_FORMAT_P016:
+        numerator = 3; break;
+    case DXGI_FORMAT_YUY2:
+        numerator = 2; break;
+    case DXGI_FORMAT_B8G8R8A8_UNORM:
+    case DXGI_FORMAT_R10G10B10A2_UNORM:
+    case DXGI_FORMAT_AYUV:
+    case DXGI_FORMAT_Y210:
+    case DXGI_FORMAT_Y410:
+    case DXGI_FORMAT_Y216:
+        numerator = 4; break;
+    case DXGI_FORMAT_R16G16B16A16_FLOAT:
+    case DXGI_FORMAT_Y416:
+        numerator = 8; break;
+    default:
+        return 0;
+    }
+    if (pixels > SIZE_MAX / numerator)
+        return 0;
+    return pixels * numerator / denominator;
+}
 
 static const struct {
     DXGI_FORMAT d3d_format;
@@ -131,12 +173,18 @@ static void d3d11va_frames_uninit(AVHWFramesContext *ctx)
     D3D11VAFramesContext *s = ctx->hwctx;
     AVD3D11VAFramesContext *frames_hwctx = &s->p;
 
-    if (frames_hwctx->texture)
+    if (frames_hwctx->texture) {
+        if (s->texture_tracked)
+            ff_memory_d3d11_free(1, ctx->initial_pool_size, s->texture_logical_bytes);
         ID3D11Texture2D_Release(frames_hwctx->texture);
+    }
     frames_hwctx->texture = NULL;
 
-    if (s->staging_texture)
+    if (s->staging_texture) {
+        if (s->staging_tracked)
+            ff_memory_d3d11_free(1, 1, s->staging_logical_bytes);
         ID3D11Texture2D_Release(s->staging_texture);
+    }
     s->staging_texture = NULL;
 
     av_freep(&frames_hwctx->texture_infos);
@@ -180,14 +228,34 @@ static void free_texture(void *opaque, uint8_t *data)
     av_free(data);
 }
 
-static AVBufferRef *wrap_texture_buf(AVHWFramesContext *ctx, ID3D11Texture2D *tex, int index)
+static void free_tracked_texture(void *opaque, uint8_t *data)
+{
+    ID3D11Texture2D *texture = opaque;
+    D3D11_TEXTURE2D_DESC desc;
+    ID3D11Texture2D_GetDesc(texture, &desc);
+    ff_memory_d3d11_free(1, desc.ArraySize, d3d11va_logical_bytes(&desc));
+    ID3D11Texture2D_Release(texture);
+    av_free(data);
+}
+
+static void release_wrapped_texture(ID3D11Texture2D *tex, int tracked)
+{
+    if (tracked) {
+        D3D11_TEXTURE2D_DESC desc;
+        ID3D11Texture2D_GetDesc(tex, &desc);
+        ff_memory_d3d11_free(1, desc.ArraySize, d3d11va_logical_bytes(&desc));
+    }
+    ID3D11Texture2D_Release(tex);
+}
+
+static AVBufferRef *wrap_texture_buf(AVHWFramesContext *ctx, ID3D11Texture2D *tex, int index, int tracked)
 {
     AVBufferRef *buf;
     AVD3D11FrameDescriptor         *desc = av_mallocz(sizeof(*desc));
     D3D11VAFramesContext              *s = ctx->hwctx;
     AVD3D11VAFramesContext *frames_hwctx = &s->p;
     if (!desc) {
-        ID3D11Texture2D_Release(tex);
+        release_wrapped_texture(tex, tracked);
         return NULL;
     }
 
@@ -196,7 +264,7 @@ static AVBufferRef *wrap_texture_buf(AVHWFramesContext *ctx, ID3D11Texture2D *te
                                                    s->nb_surfaces_used + 1,
                                                    sizeof(*frames_hwctx->texture_infos));
         if (!frames_hwctx->texture_infos) {
-            ID3D11Texture2D_Release(tex);
+            release_wrapped_texture(tex, tracked);
             av_free(desc);
             return NULL;
         }
@@ -210,9 +278,11 @@ static AVBufferRef *wrap_texture_buf(AVHWFramesContext *ctx, ID3D11Texture2D *te
     desc->texture = tex;
     desc->index   = index;
 
-    buf = av_buffer_create((uint8_t *)desc, sizeof(*desc), free_texture, tex, 0);
+    buf = av_buffer_create((uint8_t *)desc, sizeof(*desc),
+                           tracked ? free_tracked_texture : free_texture, tex, 0);
     if (!buf) {
-        ID3D11Texture2D_Release(tex);
+        s->nb_surfaces_used--;
+        release_wrapped_texture(tex, tracked);
         av_free(desc);
         return NULL;
     }
@@ -244,8 +314,8 @@ static AVBufferRef *d3d11va_alloc_single(AVHWFramesContext *ctx)
         av_log(ctx, AV_LOG_ERROR, "Could not create the texture (%lx)\n", (long)hr);
         return NULL;
     }
-
-    return wrap_texture_buf(ctx, tex, 0);
+    ff_memory_d3d11_alloc(1, texDesc.ArraySize, d3d11va_logical_bytes(&texDesc));
+    return wrap_texture_buf(ctx, tex, 0, 1);
 }
 
 static AVBufferRef *d3d11va_pool_alloc(void *opaque, size_t size)
@@ -266,7 +336,7 @@ static AVBufferRef *d3d11va_pool_alloc(void *opaque, size_t size)
     }
 
     ID3D11Texture2D_AddRef(hwctx->texture);
-    return wrap_texture_buf(ctx, hwctx->texture, s->nb_surfaces_used);
+    return wrap_texture_buf(ctx, hwctx->texture, s->nb_surfaces_used, 0);
 }
 
 static int d3d11va_frames_init(AVHWFramesContext *ctx)
@@ -328,6 +398,9 @@ static int d3d11va_frames_init(AVHWFramesContext *ctx)
             av_log(ctx, AV_LOG_ERROR, "Could not create the texture (%lx)\n", (long)hr);
             return AVERROR_UNKNOWN;
         }
+        s->texture_logical_bytes = d3d11va_logical_bytes(&texDesc);
+        s->texture_tracked = 1;
+        ff_memory_d3d11_alloc(1, texDesc.ArraySize, s->texture_logical_bytes);
     }
 
     hwctx->texture_infos = av_realloc_f(NULL, ctx->initial_pool_size, sizeof(*hwctx->texture_infos));
@@ -407,6 +480,9 @@ static int d3d11va_create_staging_texture(AVHWFramesContext *ctx, DXGI_FORMAT fo
         av_log(ctx, AV_LOG_ERROR, "Could not create the staging texture (%lx)\n", (long)hr);
         return AVERROR_UNKNOWN;
     }
+    s->staging_logical_bytes = d3d11va_logical_bytes(&texDesc);
+    s->staging_tracked = 1;
+    ff_memory_d3d11_alloc(1, 1, s->staging_logical_bytes);
 
     return 0;
 }
