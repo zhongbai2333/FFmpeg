@@ -24,7 +24,6 @@ jobs:
                       upx: true
                       msystem: UCRT64
                       pacboy: "toolchain:p nasm:p pkgconf:p"
-                      shell: "msys2 {0}"
                       cc: gcc
                       pe-machine: "0x8664"
                       extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
@@ -34,7 +33,6 @@ jobs:
                       upx: false
                       msystem: CLANGARM64
                       pacboy: "toolchain:p pkgconf:p"
-                      shell: "msys2 {0}"
                       cc: clang
                       pe-machine: "0xaa64"
                       extra-config: "--arch=aarch64 --target-os=mingw32 --enable-cross-compile --cc=clang --cxx=clang++ --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip --disable-x86asm --enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --pkg-config-flags='--static'"
@@ -43,14 +41,12 @@ jobs:
                     - os: ubuntu-latest
                       target: linux-x86_64
                       upx: false
-                      shell: bash
                       cc: gcc
                       extra-config: ""
 
                     - os: ubuntu-24.04-arm
                       target: linux-arm64
                       upx: false
-                      shell: bash
                       cc: gcc
                       extra-config: ""
 
@@ -58,7 +54,6 @@ jobs:
                     - os: macos-latest
                       target: macos-x86_64
                       upx: false
-                      shell: bash
                       cc: gcc
                       extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
                       pre-configure: |
@@ -71,7 +66,6 @@ jobs:
                     - os: macos-latest
                       target: macos-arm64
                       upx: false
-                      shell: bash
                       cc: gcc
                       extra-config: "--enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox"
 
@@ -93,6 +87,15 @@ jobs:
                   install: make
                   pacboy: ${{ matrix.pacboy }}
 
+            - name: Provide msys2 shell shim (Unix)
+              if: runner.os != 'Windows'
+              run: |
+                  mkdir -p "$RUNNER_TEMP/ci-shell"
+                  printf '%s\n' '#!/usr/bin/env bash' 'exec bash "$@"' > "$RUNNER_TEMP/ci-shell/msys2"
+                  chmod +x "$RUNNER_TEMP/ci-shell/msys2"
+                  echo "$RUNNER_TEMP/ci-shell" >> "$GITHUB_PATH"
+              shell: bash
+
             # ── Install build tools ──
             - name: Install tools (Linux)
               if: runner.os == 'Linux'
@@ -108,7 +111,7 @@ jobs:
               if: matrix.target == 'windows-x86_64'
               run: |
                   choco install upx -y --no-progress
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Configure ──
             - name: Configure FFmpeg
@@ -150,7 +153,7 @@ jobs:
                   grep -E 'HAVE_(ASM|X86ASM|MMX|MMXEXT|SSE|SSE2|SSSE3|AVX|AVX2|AVX512|NEON)' config.h || true
                   echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
                   grep -E 'CONFIG_(EAC3|H264|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|HEVC_D3D11VA|HEVC_D3D11VA2|H264_DXVA2|HEVC_DXVA2|H264_VAAPI|HEVC_VAAPI|H264_VIDEOTOOLBOX|HEVC_VIDEOTOOLBOX)' config.h || true
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Force-remove pthread from MinGW toolchain (Windows only) ──
             - name: Strip pthread linkage (Windows)
@@ -171,7 +174,7 @@ jobs:
                     config.h || true
                   echo "=== After ==="
                   grep -nE 'lwinpthread|lpthread|HAVE_PTHREAD|HAVE_WINPTHREAD' ffbuild/config.mak config.h || echo "(clean)"
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Build ──
             - name: Build
@@ -184,7 +187,7 @@ jobs:
                     find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) -print
                     exit 1
                   fi
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Build thin JNI wrappers ──
             - name: Build JNI wrappers
@@ -245,7 +248,7 @@ jobs:
                   find "$JNI_OUT" -type f \( -name "*eac3_jni*" -o -name "*video_jni*" \) | while read f; do
                     printf "  %-40s %6d bytes\n" "$(basename "$f")" $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
                   done
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             - name: Audit memory instrumentation exports
               run: |
@@ -266,7 +269,7 @@ jobs:
                     objdump -T "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
                     objdump -T "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
                   fi
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── macOS Mach-O audit/fix: use @loader_path instead of GitHub Runner absolute paths ──
             - name: Fix macOS dylib install names
@@ -459,7 +462,7 @@ jobs:
                   else
                     echo "No libwinpthread-1.dll found/needed."
                   fi
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Windows dependency audit ──
             - name: Audit Windows DLL dependencies
@@ -581,7 +584,7 @@ jobs:
                   else:
                       print("No bundled Windows runtime dependencies required.")
                   PY
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── UPX (Windows + Linux only) ──
             - name: UPX compress
@@ -597,7 +600,7 @@ jobs:
                     echo "Compressing: $f"
                     upx -9 "$f" 2>/dev/null || echo "  (skipped)"
                   done
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Show sizes ──
             - name: Show sizes
@@ -607,7 +610,7 @@ jobs:
                     size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
                     printf "  %-40s %6d bytes\n" "$(basename "$f")" "$size"
                   done
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Package ──
             - name: Package
@@ -675,7 +678,7 @@ jobs:
                   fi
 
                   tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
-              shell: ${{ matrix.shell }}
+              shell: msys2 {0}
 
             # ── Upload artifacts ──
             - name: Upload artifact
