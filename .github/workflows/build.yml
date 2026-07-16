@@ -1,660 +1,702 @@
 name: Build Minimal Media FFmpeg
 
 on:
-  push:
-    tags:
-      - "media-min-*"
-      - "eac3-min-*"
-  workflow_dispatch:
+    push:
+        tags:
+            - "media-min-*"
+            - "eac3-min-*"
+    workflow_dispatch:
 
 permissions:
-  contents: write
+    contents: write
 
 jobs:
-  build:
-    name: ${{ matrix.target }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          # ── Windows ──
-          - os: windows-latest
-            target: windows-x86_64
-            upx: true
-            extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
+    build:
+        name: ${{ matrix.target }}
+        runs-on: ${{ matrix.os }}
+        strategy:
+            fail-fast: false
+            matrix:
+                include:
+                    # ── Windows ──
+                    - os: windows-latest
+                      target: windows-x86_64
+                      upx: true
+                      msystem: UCRT64
+                      pacboy: "toolchain:p nasm:p pkgconf:p"
+                      shell: "msys2 {0}"
+                      cc: gcc
+                      pe-machine: "0x8664"
+                      extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
-          - os: windows-11-arm
-            target: windows-arm64
-            upx: true
-            extra-config: "--disable-x86asm --enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
+                    - os: windows-11-arm
+                      target: windows-arm64
+                      upx: false
+                      msystem: CLANGARM64
+                      pacboy: "toolchain:p pkgconf:p"
+                      shell: "msys2 {0}"
+                      cc: clang
+                      pe-machine: "0xaa64"
+                      extra-config: "--arch=aarch64 --target-os=mingw32 --enable-cross-compile --cc=clang --cxx=clang++ --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip --disable-x86asm --enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --pkg-config-flags='--static'"
 
-          # ── Linux ──
-          - os: ubuntu-latest
-            target: linux-x86_64
-            upx: false
-            extra-config: ""
+                    # ── Linux ──
+                    - os: ubuntu-latest
+                      target: linux-x86_64
+                      upx: false
+                      shell: bash
+                      cc: gcc
+                      extra-config: ""
 
-          - os: ubuntu-24.04-arm
-            target: linux-arm64
-            upx: false
-            extra-config: ""
+                    - os: ubuntu-24.04-arm
+                      target: linux-arm64
+                      upx: false
+                      shell: bash
+                      cc: gcc
+                      extra-config: ""
 
-          # ── macOS (不要 UPX —— 会破坏代码签名) ──
-          - os: macos-latest
-            target: macos-x86_64
-            upx: false
-            extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
-            pre-configure: |
-              export CC="clang -arch x86_64"
-              export CXX="clang++ -arch x86_64"
-              export CFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
-              export LDFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
-              export MACOSX_DEPLOYMENT_TARGET=11.0
+                    # ── macOS (不要 UPX —— 会破坏代码签名) ──
+                    - os: macos-latest
+                      target: macos-x86_64
+                      upx: false
+                      shell: bash
+                      cc: gcc
+                      extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
+                      pre-configure: |
+                          export CC="clang -arch x86_64"
+                          export CXX="clang++ -arch x86_64"
+                          export CFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
+                          export LDFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
+                          export MACOSX_DEPLOYMENT_TARGET=11.0
 
-          - os: macos-latest
-            target: macos-arm64
-            upx: false
-            extra-config: "--enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox"
+                    - os: macos-latest
+                      target: macos-arm64
+                      upx: false
+                      shell: bash
+                      cc: gcc
+                      extra-config: "--enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox"
 
-    steps:
-      - uses: actions/checkout@v4
+        steps:
+            - uses: actions/checkout@v4
 
-      # ── JDK (for JNI headers) ──
-      - uses: actions/setup-java@v4
-        with:
-          distribution: 'temurin'
-          java-version: '21'
+            # ── JDK (for JNI headers) ──
+            - uses: actions/setup-java@v4
+              with:
+                  distribution: "temurin"
+                  java-version: "21"
 
-      # ── Install build tools ──
-      - name: Install tools (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update -y -qq
-          sudo apt-get install -y -qq make gcc nasm pkg-config binutils libva-dev libdrm-dev
+            - uses: msys2/setup-msys2@v2
+              if: runner.os == 'Windows'
+              with:
+                  msystem: ${{ matrix.msystem }}
+                  update: true
+                  release: true
+                  install: make
+                  pacboy: ${{ matrix.pacboy }}
 
-      - name: Install tools (macOS)
-        if: runner.os == 'macOS'
-        run: brew install nasm
+            # ── Install build tools ──
+            - name: Install tools (Linux)
+              if: runner.os == 'Linux'
+              run: |
+                  sudo apt-get update -y -qq
+                  sudo apt-get install -y -qq make gcc nasm pkg-config binutils libva-dev libdrm-dev
 
-      - name: Install tools (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          choco install nasm upx -y --no-progress
-        shell: bash
+            - name: Install tools (macOS)
+              if: runner.os == 'macOS'
+              run: brew install nasm
 
-      # ── Configure ──
-      - name: Configure FFmpeg
-        run: |
-          ${{ matrix.pre-configure }}
-          if [ "${{ runner.os }}" = "macOS" ]; then
-            export MACOSX_DEPLOYMENT_TARGET=11.0
-          fi
-          ./configure \
-            --disable-everything \
-            --enable-decoder=eac3 \
-            --enable-decoder=h264 \
-            --enable-decoder=hevc \
-            --enable-parser=ac3 \
-            --enable-parser=h264 \
-            --enable-parser=hevc \
-            --enable-bsf=h264_mp4toannexb \
-            --enable-bsf=hevc_mp4toannexb \
-            --enable-swscale \
-            --disable-swresample \
-            --disable-programs \
-            --disable-doc \
-            --disable-avdevice \
-            --disable-avformat \
-            --disable-avfilter \
-            --disable-network \
-            --disable-encoders \
-            --disable-muxers \
-            --disable-protocols \
-            --disable-filters \
-            --enable-small \
-            --disable-debug \
-            --enable-shared \
-            --prefix="$PWD/install" \
-            ${{ matrix.extra-config }}
-          echo "=== Configured threading model ==="
-          grep -E 'THREADS|PTHREAD|W32THREAD' ffbuild/config.mak || true
-          echo "=== Configured asm/SIMD ==="
-          grep -E 'HAVE_(ASM|X86ASM|MMX|MMXEXT|SSE|SSE2|SSSE3|AVX|AVX2|AVX512|NEON)' config.h || true
-          echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
-          grep -E 'CONFIG_(EAC3|H264|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|HEVC_D3D11VA|HEVC_D3D11VA2|H264_DXVA2|HEVC_DXVA2|H264_VAAPI|HEVC_VAAPI|H264_VIDEOTOOLBOX|HEVC_VIDEOTOOLBOX)' config.h || true
-        shell: bash
+            - name: Install tools (Windows)
+              if: matrix.target == 'windows-x86_64'
+              run: |
+                  choco install upx -y --no-progress
+              shell: ${{ matrix.shell }}
 
-      # ── Force-remove pthread from MinGW toolchain (Windows only) ──
-      - name: Strip pthread linkage (Windows)
-        if: runner.os == 'Windows'
-        run: |
-          set -e
-          echo "=== Before ==="
-          grep -nE 'lwinpthread|lpthread|pthread' ffbuild/config.mak || echo "(none)"
-          sed -i.bak \
-            -e 's/-lwinpthread//g' \
-            -e 's/-lpthread//g' \
-            -e 's/-pthread//g' \
-            ffbuild/config.mak
-          sed -i.bak \
-            -e 's/#define HAVE_PTHREADS .*/#define HAVE_PTHREADS 0/' \
-            -e 's/#define HAVE_WINPTHREAD .*/#define HAVE_WINPTHREAD 0/' \
-            -e 's/#define HAVE_PTHREAD_CANCEL .*/#define HAVE_PTHREAD_CANCEL 0/' \
-            config.h || true
-          echo "=== After ==="
-          grep -nE 'lwinpthread|lpthread|HAVE_PTHREAD|HAVE_WINPTHREAD' ffbuild/config.mak config.h || echo "(clean)"
-        shell: bash
+            # ── Configure ──
+            - name: Configure FFmpeg
+              run: |
+                  ${{ matrix.pre-configure }}
+                  if [ "${{ runner.os }}" = "macOS" ]; then
+                    export MACOSX_DEPLOYMENT_TARGET=11.0
+                  fi
+                  ./configure \
+                    --disable-everything \
+                    --enable-decoder=eac3 \
+                    --enable-decoder=h264 \
+                    --enable-decoder=hevc \
+                    --enable-parser=ac3 \
+                    --enable-parser=h264 \
+                    --enable-parser=hevc \
+                    --enable-bsf=h264_mp4toannexb \
+                    --enable-bsf=hevc_mp4toannexb \
+                    --enable-swscale \
+                    --disable-swresample \
+                    --disable-programs \
+                    --disable-doc \
+                    --disable-avdevice \
+                    --disable-avformat \
+                    --disable-avfilter \
+                    --disable-network \
+                    --disable-encoders \
+                    --disable-muxers \
+                    --disable-protocols \
+                    --disable-filters \
+                    --enable-small \
+                    --disable-debug \
+                    --enable-shared \
+                    --prefix="$PWD/install" \
+                    ${{ matrix.extra-config }}
+                  echo "=== Configured threading model ==="
+                  grep -E 'THREADS|PTHREAD|W32THREAD' ffbuild/config.mak || true
+                  echo "=== Configured asm/SIMD ==="
+                  grep -E 'HAVE_(ASM|X86ASM|MMX|MMXEXT|SSE|SSE2|SSSE3|AVX|AVX2|AVX512|NEON)' config.h || true
+                  echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
+                  grep -E 'CONFIG_(EAC3|H264|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|HEVC_D3D11VA|HEVC_D3D11VA2|H264_DXVA2|HEVC_DXVA2|H264_VAAPI|HEVC_VAAPI|H264_VIDEOTOOLBOX|HEVC_VIDEOTOOLBOX)' config.h || true
+              shell: ${{ matrix.shell }}
 
-      # ── Build ──
-      - name: Build
-        run: |
-          make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
-          make install
+            # ── Force-remove pthread from MinGW toolchain (Windows only) ──
+            - name: Strip pthread linkage (Windows)
+              if: runner.os == 'Windows'
+              run: |
+                  set -e
+                  echo "=== Before ==="
+                  grep -nE 'lwinpthread|lpthread|pthread' ffbuild/config.mak || echo "(none)"
+                  sed -i.bak \
+                    -e 's/-lwinpthread//g' \
+                    -e 's/-lpthread//g' \
+                    -e 's/-pthread//g' \
+                    ffbuild/config.mak
+                  sed -i.bak \
+                    -e 's/#define HAVE_PTHREADS .*/#define HAVE_PTHREADS 0/' \
+                    -e 's/#define HAVE_WINPTHREAD .*/#define HAVE_WINPTHREAD 0/' \
+                    -e 's/#define HAVE_PTHREAD_CANCEL .*/#define HAVE_PTHREAD_CANCEL 0/' \
+                    config.h || true
+                  echo "=== After ==="
+                  grep -nE 'lwinpthread|lpthread|HAVE_PTHREAD|HAVE_WINPTHREAD' ffbuild/config.mak config.h || echo "(clean)"
+              shell: ${{ matrix.shell }}
 
-          if find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) | grep -q .; then
-            echo "::error::libswresample was produced despite --disable-swresample"
-            find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) -print
-            exit 1
-          fi
-        shell: bash
+            # ── Build ──
+            - name: Build
+              run: |
+                  make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
+                  make install
 
-      # ── Build thin JNI wrappers ──
-      - name: Build JNI wrappers
-        run: |
-          set -e
-          JNI_OUT="install/bin"
-          [ "${{ runner.os }}" != "Windows" ] && JNI_OUT="install/lib"
-          mkdir -p "$JNI_OUT"
+                  if find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) | grep -q .; then
+                    echo "::error::libswresample was produced despite --disable-swresample"
+                    find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) -print
+                    exit 1
+                  fi
+              shell: ${{ matrix.shell }}
 
-          case "${{ matrix.target }}" in
-            windows-x86_64|windows-arm64)
-              gcc -shared -o "$JNI_OUT/eac3_jni.dll" eac3_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
-                -I install/include -L install/lib -L install/bin -lavcodec -lavutil \
-                -static-libgcc
-              gcc -shared -o "$JNI_OUT/video_jni.dll" video_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
-                -I install/include -L install/lib -L install/bin -lavcodec -lswscale -lavutil \
-                -static-libgcc
-              ;;
-            linux-x86_64|linux-arm64)
-              gcc -shared -o "$JNI_OUT/libeac3_jni.so" eac3_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
-                -I install/include -L install/lib \
-                -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' \
-                -lavcodec -lavutil
-              gcc -shared -o "$JNI_OUT/libvideo_jni.so" video_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
-                -I install/include -L install/lib \
-                -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' \
-                -lavcodec -lswscale -lavutil
-              ;;
-            macos-x86_64)
-              gcc -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
-                -I install/include -L install/lib -lavcodec -lavutil
-              gcc -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
-                -I install/include -L install/lib -lavcodec -lswscale -lavutil
-              ;;
-            macos-arm64)
-              gcc -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
-                -I install/include -L install/lib -lavcodec -lavutil
-              gcc -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
-                -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
-                -I install/include -L install/lib -lavcodec -lswscale -lavutil
-              ;;
-          esac
+            # ── Build thin JNI wrappers ──
+            - name: Build JNI wrappers
+              run: |
+                  set -e
+                  CC_BIN="${{ matrix.cc }}"
+                  JNI_OUT="install/bin"
+                  [ "${{ runner.os }}" != "Windows" ] && JNI_OUT="install/lib"
+                  mkdir -p "$JNI_OUT"
 
-          if [ "${{ matrix.upx }}" = "true" ]; then
-            find "$JNI_OUT" -type f \( -name "*.dll" -o -name "*.so" \) | while read f; do
-              upx --ultra-brute "$f" 2>/dev/null || echo "  JNI UPX skipped: $f"
-            done
-          fi
+                  case "${{ matrix.target }}" in
+                    windows-x86_64|windows-arm64)
+                      "$CC_BIN" -shared -o "$JNI_OUT/eac3_jni.dll" eac3_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
+                        -I install/include -L install/lib -L install/bin -lavcodec -lavutil \
+                        -static-libgcc
+                      "$CC_BIN" -shared -o "$JNI_OUT/video_jni.dll" video_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/win32" \
+                        -I install/include -L install/lib -L install/bin -lavcodec -lswscale -lavutil \
+                        -static-libgcc
+                      ;;
+                    linux-x86_64|linux-arm64)
+                      "$CC_BIN" -shared -o "$JNI_OUT/libeac3_jni.so" eac3_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+                        -I install/include -L install/lib \
+                        -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' \
+                        -lavcodec -lavutil
+                      "$CC_BIN" -shared -o "$JNI_OUT/libvideo_jni.so" video_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/linux" \
+                        -I install/include -L install/lib \
+                        -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' \
+                        -lavcodec -lswscale -lavutil
+                      ;;
+                    macos-x86_64)
+                      "$CC_BIN" -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                        -I install/include -L install/lib -lavcodec -lavutil
+                      "$CC_BIN" -arch x86_64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                        -I install/include -L install/lib -lavcodec -lswscale -lavutil
+                      ;;
+                    macos-arm64)
+                      "$CC_BIN" -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                        -I install/include -L install/lib -lavcodec -lavutil
+                      "$CC_BIN" -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
+                        -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
+                        -I install/include -L install/lib -lavcodec -lswscale -lavutil
+                      ;;
+                  esac
 
-          find "$JNI_OUT" -type f \( -name "*eac3_jni*" -o -name "*video_jni*" \) | while read f; do
-            printf "  %-40s %6d bytes\n" "$(basename "$f")" $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
-          done
-        shell: bash
+                  if [ "${{ matrix.upx }}" = "true" ]; then
+                    find "$JNI_OUT" -type f \( -name "*.dll" -o -name "*.so" \) | while read f; do
+                      upx --ultra-brute "$f" 2>/dev/null || echo "  JNI UPX skipped: $f"
+                    done
+                  fi
 
-      - name: Audit memory instrumentation exports
-        run: |
-          set -euo pipefail
-          if [ "${{ runner.os }}" = "Windows" ]; then
-            AVUTIL_LIB="$(find install/bin -maxdepth 1 -type f -iname 'avutil-*.dll' | head -n 1)"
-            VIDEO_JNI="install/bin/video_jni.dll"
-            objdump -p "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
-            objdump -p "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil*.dylib' | head -n 1)"
-            VIDEO_JNI="install/lib/libvideo_jni.dylib"
-            nm -gU "$AVUTIL_LIB" | grep -F '_av_get_memory_stats'
-            nm -gU "$VIDEO_JNI" | grep -F '_Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
-          else
-            AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil.so*' | head -n 1)"
-            VIDEO_JNI="install/lib/libvideo_jni.so"
-            objdump -T "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
-            objdump -T "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
-          fi
-        shell: bash
+                  find "$JNI_OUT" -type f \( -name "*eac3_jni*" -o -name "*video_jni*" \) | while read f; do
+                    printf "  %-40s %6d bytes\n" "$(basename "$f")" $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+                  done
+              shell: ${{ matrix.shell }}
 
-      # ── macOS Mach-O audit/fix: use @loader_path instead of GitHub Runner absolute paths ──
-      - name: Fix macOS dylib install names
-        if: runner.os == 'macOS'
-        run: |
-          set -euo pipefail
-          libdir="install/lib"
+            - name: Audit memory instrumentation exports
+              run: |
+                  set -euo pipefail
+                  if [ "${{ runner.os }}" = "Windows" ]; then
+                    AVUTIL_LIB="$(find install/bin -maxdepth 1 -type f -iname 'avutil-*.dll' | head -n 1)"
+                    VIDEO_JNI="install/bin/video_jni.dll"
+                    objdump -p "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
+                    objdump -p "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+                  elif [ "${{ runner.os }}" = "macOS" ]; then
+                    AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil*.dylib' | head -n 1)"
+                    VIDEO_JNI="install/lib/libvideo_jni.dylib"
+                    nm -gU "$AVUTIL_LIB" | grep -F '_av_get_memory_stats'
+                    nm -gU "$VIDEO_JNI" | grep -F '_Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+                  else
+                    AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil.so*' | head -n 1)"
+                    VIDEO_JNI="install/lib/libvideo_jni.so"
+                    objdump -T "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
+                    objdump -T "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+                  fi
+              shell: ${{ matrix.shell }}
 
-          ffmpeg_major() {
-            awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
-          }
+            # ── macOS Mach-O audit/fix: use @loader_path instead of GitHub Runner absolute paths ──
+            - name: Fix macOS dylib install names
+              if: runner.os == 'macOS'
+              run: |
+                  set -euo pipefail
+                  libdir="install/lib"
 
-          AVUTIL_MAJOR="$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
-          SWSCALE_MAJOR="$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
-          AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
-          AVUTIL_DYLIB="libavutil.${AVUTIL_MAJOR}.dylib"
-          SWSCALE_DYLIB="libswscale.${SWSCALE_MAJOR}.dylib"
-          AVCODEC_DYLIB="libavcodec.${AVCODEC_MAJOR}.dylib"
+                  ffmpeg_major() {
+                    awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+                  }
 
-          ensure_dylib_name() {
-            short="$1"
-            if [ -f "$libdir/$short" ]; then
-              return 0
-            fi
-            stem="${short%.dylib}"
-            candidate="$(find "$libdir" -maxdepth 1 -type f -name "$stem.*.dylib" | sort | head -n 1 || true)"
-            if [ -n "$candidate" ]; then
-              cp "$candidate" "$libdir/$short"
-              return 0
-            fi
-            link_target="$(find "$libdir" -maxdepth 1 -type l -name "$stem*.dylib" | sort | head -n 1 || true)"
-            if [ -n "$link_target" ]; then
-              cp "$(readlink "$link_target")" "$libdir/$short" 2>/dev/null || cp "$link_target" "$libdir/$short"
-            fi
-          }
+                  AVUTIL_MAJOR="$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
+                  SWSCALE_MAJOR="$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
+                  AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
+                  AVUTIL_DYLIB="libavutil.${AVUTIL_MAJOR}.dylib"
+                  SWSCALE_DYLIB="libswscale.${SWSCALE_MAJOR}.dylib"
+                  AVCODEC_DYLIB="libavcodec.${AVCODEC_MAJOR}.dylib"
 
-          require_file() {
-            if [ ! -f "$1" ]; then
-              echo "::error::Missing macOS dylib: $1"
-              find install -type f -name '*.dylib' -maxdepth 3 || true
-              exit 1
-            fi
-          }
+                  ensure_dylib_name() {
+                    short="$1"
+                    if [ -f "$libdir/$short" ]; then
+                      return 0
+                    fi
+                    stem="${short%.dylib}"
+                    candidate="$(find "$libdir" -maxdepth 1 -type f -name "$stem.*.dylib" | sort | head -n 1 || true)"
+                    if [ -n "$candidate" ]; then
+                      cp "$candidate" "$libdir/$short"
+                      return 0
+                    fi
+                    link_target="$(find "$libdir" -maxdepth 1 -type l -name "$stem*.dylib" | sort | head -n 1 || true)"
+                    if [ -n "$link_target" ]; then
+                      cp "$(readlink "$link_target")" "$libdir/$short" 2>/dev/null || cp "$link_target" "$libdir/$short"
+                    fi
+                  }
 
-          for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
-            ensure_dylib_name "$lib"
-          done
+                  require_file() {
+                    if [ ! -f "$1" ]; then
+                      echo "::error::Missing macOS dylib: $1"
+                      find install -type f -name '*.dylib' -maxdepth 3 || true
+                      exit 1
+                    fi
+                  }
 
-          for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
-                     libeac3_jni.dylib libvideo_jni.dylib; do
-            require_file "$libdir/$lib"
-          done
+                  for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
+                    ensure_dylib_name "$lib"
+                  done
 
-          install_name_tool -id "@loader_path/$AVUTIL_DYLIB" "$libdir/$AVUTIL_DYLIB"
-          install_name_tool -id "@loader_path/$SWSCALE_DYLIB" "$libdir/$SWSCALE_DYLIB"
-          install_name_tool -id "@loader_path/$AVCODEC_DYLIB" "$libdir/$AVCODEC_DYLIB"
-          install_name_tool -id "@loader_path/libeac3_jni.dylib" "$libdir/libeac3_jni.dylib"
-          install_name_tool -id "@loader_path/libvideo_jni.dylib" "$libdir/libvideo_jni.dylib"
+                  for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
+                             libeac3_jni.dylib libvideo_jni.dylib; do
+                    require_file "$libdir/$lib"
+                  done
 
-          for lib in "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
-                     libeac3_jni.dylib libvideo_jni.dylib; do
-            install_name_tool -change "$PWD/install/lib/$AVUTIL_DYLIB" \
-              "@loader_path/$AVUTIL_DYLIB" "$libdir/$lib" || true
-          done
-          for lib in libeac3_jni.dylib libvideo_jni.dylib; do
-            install_name_tool -change "$PWD/install/lib/$AVCODEC_DYLIB" \
-              "@loader_path/$AVCODEC_DYLIB" "$libdir/$lib" || true
-          done
-          install_name_tool -change "$PWD/install/lib/$SWSCALE_DYLIB" \
-            "@loader_path/$SWSCALE_DYLIB" "$libdir/libvideo_jni.dylib" || true
+                  install_name_tool -id "@loader_path/$AVUTIL_DYLIB" "$libdir/$AVUTIL_DYLIB"
+                  install_name_tool -id "@loader_path/$SWSCALE_DYLIB" "$libdir/$SWSCALE_DYLIB"
+                  install_name_tool -id "@loader_path/$AVCODEC_DYLIB" "$libdir/$AVCODEC_DYLIB"
+                  install_name_tool -id "@loader_path/libeac3_jni.dylib" "$libdir/libeac3_jni.dylib"
+                  install_name_tool -id "@loader_path/libvideo_jni.dylib" "$libdir/libvideo_jni.dylib"
 
-          echo "=== macOS dylib dependencies after fix ==="
-          for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
-                     libeac3_jni.dylib libvideo_jni.dylib; do
-            echo "--- $lib ---"
-            otool -D "$libdir/$lib" || true
-            otool -L "$libdir/$lib"
-            if otool -L "$libdir/$lib" | grep -q "$PWD/install/lib"; then
-              echo "::error::$lib still contains build-machine absolute install path"
-              exit 1
-            fi
-          done
-        shell: bash
+                  for lib in "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
+                             libeac3_jni.dylib libvideo_jni.dylib; do
+                    install_name_tool -change "$PWD/install/lib/$AVUTIL_DYLIB" \
+                      "@loader_path/$AVUTIL_DYLIB" "$libdir/$lib" || true
+                  done
+                  for lib in libeac3_jni.dylib libvideo_jni.dylib; do
+                    install_name_tool -change "$PWD/install/lib/$AVCODEC_DYLIB" \
+                      "@loader_path/$AVCODEC_DYLIB" "$libdir/$lib" || true
+                  done
+                  install_name_tool -change "$PWD/install/lib/$SWSCALE_DYLIB" \
+                    "@loader_path/$SWSCALE_DYLIB" "$libdir/libvideo_jni.dylib" || true
 
-      # ── Linux ELF audit: fail fast before packaging broken hidden-symbol libraries ──
-      - name: Audit Linux ELF symbols
-        if: runner.os == 'Linux'
-        run: |
-          set -euo pipefail
-          libdir="install/lib"
+                  echo "=== macOS dylib dependencies after fix ==="
+                  for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
+                             libeac3_jni.dylib libvideo_jni.dylib; do
+                    echo "--- $lib ---"
+                    otool -D "$libdir/$lib" || true
+                    otool -L "$libdir/$lib"
+                    if otool -L "$libdir/$lib" | grep -q "$PWD/install/lib"; then
+                      echo "::error::$lib still contains build-machine absolute install path"
+                      exit 1
+                    fi
+                  done
+              shell: bash
 
-          ffmpeg_major() {
-            awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
-          }
+            # ── Linux ELF audit: fail fast before packaging broken hidden-symbol libraries ──
+            - name: Audit Linux ELF symbols
+              if: runner.os == 'Linux'
+              run: |
+                  set -euo pipefail
+                  libdir="install/lib"
 
-          AVUTIL_SO="libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
-          SWSCALE_SO="libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
-          AVCODEC_SO="libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
+                  ffmpeg_major() {
+                    awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+                  }
 
-          require_export() {
-            lib="$1"
-            symbol="$2"
-            if ! readelf --dyn-syms --wide "$libdir/$lib" | grep -q " $symbol@@\| $symbol$"; then
-              echo "::error::$lib does not export required dynamic symbol: $symbol"
-              readelf -d "$libdir/$lib" || true
-              readelf --dyn-syms --wide "$libdir/$lib" | head -80 || true
-              exit 1
-            fi
-          }
+                  AVUTIL_SO="libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
+                  SWSCALE_SO="libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
+                  AVCODEC_SO="libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
 
-          require_any_export() {
-            lib="$1"
-            shift
-            for symbol in "$@"; do
-              if readelf --dyn-syms --wide "$libdir/$lib" | grep -q " $symbol@@\| $symbol$"; then
-                return 0
-              fi
-            done
-            echo "::error::$lib does not export any of required dynamic symbols: $*"
-            readelf -d "$libdir/$lib" || true
-            readelf --dyn-syms --wide "$libdir/$lib" | head -80 || true
-            exit 1
-          }
+                  require_export() {
+                    lib="$1"
+                    symbol="$2"
+                    if ! readelf --dyn-syms --wide "$libdir/$lib" | grep -q " $symbol@@\| $symbol$"; then
+                      echo "::error::$lib does not export required dynamic symbol: $symbol"
+                      readelf -d "$libdir/$lib" || true
+                      readelf --dyn-syms --wide "$libdir/$lib" | head -80 || true
+                      exit 1
+                    fi
+                  }
 
-          require_needed() {
-            lib="$1"
-            needed="$2"
-            if ! readelf -d "$libdir/$lib" | grep -q "Shared library: \[$needed"; then
-              echo "::error::$lib is missing DT_NEEDED entry for $needed"
-              readelf -d "$libdir/$lib" || true
-              objdump -T "$libdir/$lib" | grep -E 'avcodec|avutil|sws_' || true
-              exit 1
-            fi
-          }
+                  require_any_export() {
+                    lib="$1"
+                    shift
+                    for symbol in "$@"; do
+                      if readelf --dyn-syms --wide "$libdir/$lib" | grep -q " $symbol@@\| $symbol$"; then
+                        return 0
+                      fi
+                    done
+                    echo "::error::$lib does not export any of required dynamic symbols: $*"
+                    readelf -d "$libdir/$lib" || true
+                    readelf --dyn-syms --wide "$libdir/$lib" | head -80 || true
+                    exit 1
+                  }
 
-          # libavutil can legitimately hide/internalize helpers that are not
-          # part of the JNI boundary in some minimal builds. Audit stable public
-          # symbols actually used by the wrappers/FFmpeg shared libraries instead.
-          require_any_export "$AVUTIL_SO" av_version_info av_frame_alloc av_frame_free
-          require_export "$AVCODEC_SO" avcodec_send_packet
-          require_export "$SWSCALE_SO" sws_scale
+                  require_needed() {
+                    lib="$1"
+                    needed="$2"
+                    if ! readelf -d "$libdir/$lib" | grep -q "Shared library: \[$needed"; then
+                      echo "::error::$lib is missing DT_NEEDED entry for $needed"
+                      readelf -d "$libdir/$lib" || true
+                      objdump -T "$libdir/$lib" | grep -E 'avcodec|avutil|sws_' || true
+                      exit 1
+                    fi
+                  }
 
-          require_needed libeac3_jni.so "$AVCODEC_SO"
-          require_needed libeac3_jni.so "$AVUTIL_SO"
-          require_needed libvideo_jni.so "$AVCODEC_SO"
-          require_needed libvideo_jni.so "$AVUTIL_SO"
-          require_needed libvideo_jni.so "$SWSCALE_SO"
+                  # libavutil can legitimately hide/internalize helpers that are not
+                  # part of the JNI boundary in some minimal builds. Audit stable public
+                  # symbols actually used by the wrappers/FFmpeg shared libraries instead.
+                  require_any_export "$AVUTIL_SO" av_version_info av_frame_alloc av_frame_free
+                  require_export "$AVCODEC_SO" avcodec_send_packet
+                  require_export "$SWSCALE_SO" sws_scale
 
-          for lib in "$AVUTIL_SO" "$AVCODEC_SO" "$SWSCALE_SO" libeac3_jni.so libvideo_jni.so; do
-            echo "=== $lib dynamic section ==="
-            readelf -d "$libdir/$lib" | grep -E 'NEEDED|SONAME|RPATH|RUNPATH' || true
-            echo "=== $lib key symbols ==="
-            objdump -T "$libdir/$lib" | grep -E 'av_version_info|av_frame_alloc|av_frame_free|avcodec_send_packet|avcodec_receive_frame|avcodec_flush_buffers|sws_scale|Java_com_' || true
-          done
-        shell: bash
+                  require_needed libeac3_jni.so "$AVCODEC_SO"
+                  require_needed libeac3_jni.so "$AVUTIL_SO"
+                  require_needed libvideo_jni.so "$AVCODEC_SO"
+                  require_needed libvideo_jni.so "$AVUTIL_SO"
+                  require_needed libvideo_jni.so "$SWSCALE_SO"
 
-      # ── Bundle Windows runtime dependencies ──
-      - name: Bundle Windows runtime dependencies
-        if: runner.os == 'Windows'
-        run: |
-          set -e
-          mkdir -p install/bin
+                  for lib in "$AVUTIL_SO" "$AVCODEC_SO" "$SWSCALE_SO" libeac3_jni.so libvideo_jni.so; do
+                    echo "=== $lib dynamic section ==="
+                    readelf -d "$libdir/$lib" | grep -E 'NEEDED|SONAME|RPATH|RUNPATH' || true
+                    echo "=== $lib key symbols ==="
+                    objdump -T "$libdir/$lib" | grep -E 'av_version_info|av_frame_alloc|av_frame_free|avcodec_send_packet|avcodec_receive_frame|avcodec_flush_buffers|sws_scale|Java_com_' || true
+                  done
+              shell: bash
 
-          find_dll() {
-            name="$1"
-            candidate="$(where.exe "$name" 2>/dev/null | tr -d '\r' | head -n 1 || true)"
-            if [ -n "$candidate" ]; then
-              candidate="$(cygpath -u "$candidate" 2>/dev/null || echo "$candidate")"
-              if [ -f "$candidate" ]; then
-                echo "$candidate"
-                return 0
-              fi
-            fi
+            # ── Bundle Windows runtime dependencies ──
+            - name: Bundle Windows runtime dependencies
+              if: runner.os == 'Windows'
+              run: |
+                  set -e
+                  mkdir -p install/bin
 
-            for root in /mingw64 /ucrt64 /clang64 /clangarm64 /usr /c/ProgramData/chocolatey/lib; do
-              [ -d "$root" ] || continue
-              candidate="$(find "$root" -type f -iname "$name" 2>/dev/null | head -n 1 || true)"
-              if [ -n "$candidate" ]; then
-                echo "$candidate"
-                return 0
-              fi
-            done
-            return 1
-          }
+                  find_dll() {
+                    name="$1"
+                    candidate="$(where.exe "$name" 2>/dev/null | tr -d '\r' | head -n 1 || true)"
+                    if [ -n "$candidate" ]; then
+                      candidate="$(cygpath -u "$candidate" 2>/dev/null || echo "$candidate")"
+                      if [ -f "$candidate" ]; then
+                        echo "$candidate"
+                        return 0
+                      fi
+                    fi
 
-          dep="$(find_dll libwinpthread-1.dll || true)"
-          if [ -n "$dep" ]; then
-            cp "$dep" install/bin/libwinpthread-1.dll
-            echo "Bundled libwinpthread-1.dll from: $dep"
-          else
-            echo "No libwinpthread-1.dll found/needed."
-          fi
-        shell: bash
+                    for root in "$MINGW_PREFIX" /usr /c/ProgramData/chocolatey/lib; do
+                      [ -d "$root" ] || continue
+                      candidate="$(find "$root" -type f -iname "$name" 2>/dev/null | head -n 1 || true)"
+                      if [ -n "$candidate" ]; then
+                        echo "$candidate"
+                        return 0
+                      fi
+                    done
+                    return 1
+                  }
 
-      # ── Windows dependency audit ──
-      - name: Audit Windows DLL dependencies
-        if: runner.os == 'Windows'
-        run: |
-          python - <<'PY'
-          import pathlib
-          import struct
-          import sys
+                  dep="$(find_dll libwinpthread-1.dll || true)"
+                  if [ -n "$dep" ]; then
+                    cp "$dep" install/bin/libwinpthread-1.dll
+                    echo "Bundled libwinpthread-1.dll from: $dep"
+                  else
+                    echo "No libwinpthread-1.dll found/needed."
+                  fi
+              shell: ${{ matrix.shell }}
 
-          FORBIDDEN = {
-              "libgcc_s_seh-1.dll",
-              "libgcc_s_dw2-1.dll",
-              "libstdc++-6.dll",
-          }
-          BUNDLED = {
-              "libwinpthread-1.dll",
-          }
+            # ── Windows dependency audit ──
+            - name: Audit Windows DLL dependencies
+              if: runner.os == 'Windows'
+              env:
+                  EXPECTED_PE_MACHINE: ${{ matrix.pe-machine }}
+              run: |
+                  python - <<'PY'
+                  import os
+                  import pathlib
+                  import struct
+                  import sys
 
-          def rva_to_off(sections, rva):
-              for va, vsz, raw, rawsz in sections:
-                  if va <= rva < va + max(vsz, rawsz):
-                      return raw + (rva - va)
-              return None
+                  FORBIDDEN = {
+                      "libgcc_s_seh-1.dll",
+                      "libgcc_s_dw2-1.dll",
+                      "libstdc++-6.dll",
+                  }
+                  BUNDLED = {
+                      "libwinpthread-1.dll",
+                  }
+                  EXPECTED_PE_MACHINE = int(os.environ["EXPECTED_PE_MACHINE"], 0)
 
-          def imports(path):
-              data = path.read_bytes()
-              if data[:2] != b"MZ":
-                  return []
-              pe = struct.unpack_from("<I", data, 0x3C)[0]
-              if data[pe:pe + 4] != b"PE\0\0":
-                  return []
-              coff = pe + 4
-              _, sections_count, _, _, _, opt_size, _ = struct.unpack_from("<HHIIIHH", data, coff)
-              opt = coff + 20
-              magic = struct.unpack_from("<H", data, opt)[0]
-              if magic == 0x20B:
-                  data_dirs = opt + 112
-              elif magic == 0x10B:
-                  data_dirs = opt + 96
-              else:
-                  return []
-              import_rva, _ = struct.unpack_from("<II", data, data_dirs + 8)
-              if import_rva == 0:
-                  return []
+                  def rva_to_off(sections, rva):
+                      for va, vsz, raw, rawsz in sections:
+                          if va <= rva < va + max(vsz, rawsz):
+                              return raw + (rva - va)
+                      return None
 
-              section_table = opt + opt_size
-              sections = []
-              for i in range(sections_count):
-                  header = section_table + i * 40
-                  vsz, va, rawsz, raw = struct.unpack_from("<IIII", data, header + 8)
-                  sections.append((va, vsz, raw, rawsz))
+                  def imports(path):
+                      data = path.read_bytes()
+                      if data[:2] != b"MZ":
+                          return []
+                      pe = struct.unpack_from("<I", data, 0x3C)[0]
+                      if data[pe:pe + 4] != b"PE\0\0":
+                          return []
+                      coff = pe + 4
+                      _, sections_count, _, _, _, opt_size, _ = struct.unpack_from("<HHIIIHH", data, coff)
+                      opt = coff + 20
+                      magic = struct.unpack_from("<H", data, opt)[0]
+                      if magic == 0x20B:
+                          data_dirs = opt + 112
+                      elif magic == 0x10B:
+                          data_dirs = opt + 96
+                      else:
+                          return []
+                      import_rva, _ = struct.unpack_from("<II", data, data_dirs + 8)
+                      if import_rva == 0:
+                          return []
 
-              import_off = rva_to_off(sections, import_rva)
-              if import_off is None:
-                  return []
+                      section_table = opt + opt_size
+                      sections = []
+                      for i in range(sections_count):
+                          header = section_table + i * 40
+                          vsz, va, rawsz, raw = struct.unpack_from("<IIII", data, header + 8)
+                          sections.append((va, vsz, raw, rawsz))
 
-              result = []
-              for i in range(512):
-                  desc = import_off + i * 20
-                  if desc + 20 > len(data):
-                      break
-                  values = struct.unpack_from("<IIIII", data, desc)
-                  if values == (0, 0, 0, 0, 0):
-                      break
-                  name_off = rva_to_off(sections, values[3])
-                  if name_off is None:
-                      continue
-                  end = data.find(b"\0", name_off)
-                  if end > name_off:
-                      result.append(data[name_off:end].decode("ascii", "replace"))
-              return result
+                      import_off = rva_to_off(sections, import_rva)
+                      if import_off is None:
+                          return []
 
-          bundled_present = {p.name.lower() for p in pathlib.Path("install").rglob("*.dll")}
-          bad = []
-          missing_bundled = []
-          for dll in sorted(pathlib.Path("install").rglob("*.dll")):
-              imported = imports(dll)
-              print(f"{dll}:")
-              for name in imported:
-                  print(f"  {name}")
-              forbidden = sorted(name for name in imported if name.lower() in FORBIDDEN)
-              if forbidden:
-                  bad.append((dll, forbidden))
-              for name in imported:
-                  lowered = name.lower()
-                  if lowered in BUNDLED and lowered not in bundled_present:
-                      missing_bundled.append((dll, name))
+                      result = []
+                      for i in range(512):
+                          desc = import_off + i * 20
+                          if desc + 20 > len(data):
+                              break
+                          values = struct.unpack_from("<IIIII", data, desc)
+                          if values == (0, 0, 0, 0, 0):
+                              break
+                          name_off = rva_to_off(sections, values[3])
+                          if name_off is None:
+                              continue
+                          end = data.find(b"\0", name_off)
+                          if end > name_off:
+                              result.append(data[name_off:end].decode("ascii", "replace"))
+                      return result
 
-          if bad or missing_bundled:
-              if bad:
-                  print("::error::Forbidden MinGW runtime dependencies found:")
-                  for dll, deps in bad:
-                      print(f"  {dll}: {', '.join(deps)}")
-              if missing_bundled:
-                  print("::error::Bundled runtime dependencies are imported but missing from install output:")
-                  for dll, dep in missing_bundled:
-                      print(f"  {dll}: {dep}")
-              sys.exit(1)
+                  bundled_present = {p.name.lower() for p in pathlib.Path("install").rglob("*.dll")}
+                  bad = []
+                  wrong_machine = []
+                  missing_bundled = []
+                  for dll in sorted(pathlib.Path("install").rglob("*.dll")):
+                      data = dll.read_bytes()
+                      pe = struct.unpack_from("<I", data, 0x3C)[0]
+                      machine = struct.unpack_from("<H", data, pe + 4)[0]
+                      if machine != EXPECTED_PE_MACHINE:
+                        wrong_machine.append((dll, machine))
+                      imported = imports(dll)
+                      print(f"{dll} (PE Machine 0x{machine:04x}):")
+                      for name in imported:
+                          print(f"  {name}")
+                      forbidden = sorted(name for name in imported if name.lower() in FORBIDDEN)
+                      if forbidden:
+                          bad.append((dll, forbidden))
+                      for name in imported:
+                          lowered = name.lower()
+                          if lowered in BUNDLED and lowered not in bundled_present:
+                              missing_bundled.append((dll, name))
 
-          if BUNDLED & bundled_present:
-              print("Bundled runtime dependencies:")
-              for name in sorted(BUNDLED & bundled_present):
-                  print(f"  {name}")
-          else:
-              print("No bundled Windows runtime dependencies required.")
-          PY
-        shell: bash
+                  if bad or wrong_machine or missing_bundled:
+                      if bad:
+                          print("::error::Forbidden MinGW runtime dependencies found:")
+                          for dll, deps in bad:
+                              print(f"  {dll}: {', '.join(deps)}")
+                      if wrong_machine:
+                        print(f"::error::DLL architecture mismatch; expected PE Machine 0x{EXPECTED_PE_MACHINE:04x}:")
+                        for dll, machine in wrong_machine:
+                          print(f"  {dll}: 0x{machine:04x}")
+                      if missing_bundled:
+                          print("::error::Bundled runtime dependencies are imported but missing from install output:")
+                          for dll, dep in missing_bundled:
+                              print(f"  {dll}: {dep}")
+                      sys.exit(1)
 
-      # ── UPX (Windows + Linux only) ──
-      - name: UPX compress
-        if: matrix.upx
-        run: |
-          find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
-            case "$(basename "$f")" in
-              libwinpthread-1.dll)
-                echo "Skipping runtime DLL: $f"
-                continue
-                ;;
-            esac
-            echo "Compressing: $f"
-            upx -9 "$f" 2>/dev/null || echo "  (skipped)"
-          done
-        shell: bash
+                  if BUNDLED & bundled_present:
+                      print("Bundled runtime dependencies:")
+                      for name in sorted(BUNDLED & bundled_present):
+                          print(f"  {name}")
+                  else:
+                      print("No bundled Windows runtime dependencies required.")
+                  PY
+              shell: ${{ matrix.shell }}
 
-      # ── Show sizes ──
-      - name: Show sizes
-        run: |
-          echo "=== Build artifacts ==="
-          find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so*" \) | while read f; do
-            size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
-            printf "  %-40s %6d bytes\n" "$(basename "$f")" "$size"
-          done
-        shell: bash
+            # ── UPX (Windows + Linux only) ──
+            - name: UPX compress
+              if: matrix.upx
+              run: |
+                  find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
+                    case "$(basename "$f")" in
+                      libwinpthread-1.dll)
+                        echo "Skipping runtime DLL: $f"
+                        continue
+                        ;;
+                    esac
+                    echo "Compressing: $f"
+                    upx -9 "$f" 2>/dev/null || echo "  (skipped)"
+                  done
+              shell: ${{ matrix.shell }}
 
-      # ── Package ──
-      - name: Package
-        run: |
-          mkdir -p dist/${{ matrix.target }}
-          if [ "${{ runner.os }}" = "Linux" ]; then
-            # Package only runtime SONAME filenames as real files. Do not include
-            # both libfoo.so.N and libfoo.so.N.x.y.z: JAR resources need the
-            # SONAME names, and duplicating the full-version files nearly doubles
-            # the Linux archive size.
-            ffmpeg_major() {
-              awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
-            }
-            for soname in \
-              "libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)" \
-              "libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)" \
-              "libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"; do
-              target="$(readlink "install/lib/$soname" 2>/dev/null || true)"
-              if [ -n "$target" ] && [ -f "install/lib/$target" ]; then
-                cp "install/lib/$target" "dist/${{ matrix.target }}/$soname"
-              elif [ -f "install/lib/$soname" ]; then
-                cp "install/lib/$soname" "dist/${{ matrix.target }}/$soname"
-              else
-                echo "::error::Missing Linux SONAME file: $soname"
-                find install/lib -maxdepth 1 -name 'libav*.so*' -o -name 'libsw*.so*'
-                exit 1
-              fi
-              if [ -L "dist/${{ matrix.target }}/$soname" ] || [ ! -s "dist/${{ matrix.target }}/$soname" ]; then
-                echo "::error::Linux SONAME package entry must be a non-empty regular file: $soname"
-                ls -l "dist/${{ matrix.target }}/$soname" || true
-                exit 1
-              fi
-            done
-            cp install/lib/libeac3_jni.so dist/${{ matrix.target }}/
-            cp install/lib/libvideo_jni.so dist/${{ matrix.target }}/
-            echo "=== Packaged Linux runtime files ==="
-            ls -lh dist/${{ matrix.target }}
-          elif [ "${{ runner.os }}" = "macOS" ]; then
-            # Package only the names used by the Java loader, as regular files.
-            # Full-version dylib files are not resources and only bloat the JAR.
-            ffmpeg_major() {
-              awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
-            }
-            for dylib in \
-              "libavutil.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h).dylib" \
-              "libswscale.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h).dylib" \
-              "libavcodec.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h).dylib" \
-              libeac3_jni.dylib libvideo_jni.dylib; do
-              if [ ! -s "install/lib/$dylib" ]; then
-                echo "::error::Missing macOS runtime file: $dylib"
-                find install/lib -maxdepth 1 -name '*.dylib' -ls || true
-                exit 1
-              fi
-              cp "install/lib/$dylib" "dist/${{ matrix.target }}/$dylib"
-            done
-            echo "=== Packaged macOS runtime files ==="
-            ls -lh dist/${{ matrix.target }}
-          else
-            find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so" -o -name "*.so.*" -o -name "*eac3_jni*" -o -name "*video_jni*" \) ! -name "*.h" | while read f; do
-              cp "$f" dist/${{ matrix.target }}/
-            done
-            find install -type l -name "*.so*" | while read f; do
-              cp -P "$f" dist/${{ matrix.target }}/ 2>/dev/null || true
-            done
-          fi
+            # ── Show sizes ──
+            - name: Show sizes
+              run: |
+                  echo "=== Build artifacts ==="
+                  find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so*" \) | while read f; do
+                    size=$(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
+                    printf "  %-40s %6d bytes\n" "$(basename "$f")" "$size"
+                  done
+              shell: ${{ matrix.shell }}
 
-          tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
-        shell: bash
+            # ── Package ──
+            - name: Package
+              run: |
+                  mkdir -p dist/${{ matrix.target }}
+                  if [ "${{ runner.os }}" = "Linux" ]; then
+                    # Package only runtime SONAME filenames as real files. Do not include
+                    # both libfoo.so.N and libfoo.so.N.x.y.z: JAR resources need the
+                    # SONAME names, and duplicating the full-version files nearly doubles
+                    # the Linux archive size.
+                    ffmpeg_major() {
+                      awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+                    }
+                    for soname in \
+                      "libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)" \
+                      "libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)" \
+                      "libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"; do
+                      target="$(readlink "install/lib/$soname" 2>/dev/null || true)"
+                      if [ -n "$target" ] && [ -f "install/lib/$target" ]; then
+                        cp "install/lib/$target" "dist/${{ matrix.target }}/$soname"
+                      elif [ -f "install/lib/$soname" ]; then
+                        cp "install/lib/$soname" "dist/${{ matrix.target }}/$soname"
+                      else
+                        echo "::error::Missing Linux SONAME file: $soname"
+                        find install/lib -maxdepth 1 -name 'libav*.so*' -o -name 'libsw*.so*'
+                        exit 1
+                      fi
+                      if [ -L "dist/${{ matrix.target }}/$soname" ] || [ ! -s "dist/${{ matrix.target }}/$soname" ]; then
+                        echo "::error::Linux SONAME package entry must be a non-empty regular file: $soname"
+                        ls -l "dist/${{ matrix.target }}/$soname" || true
+                        exit 1
+                      fi
+                    done
+                    cp install/lib/libeac3_jni.so dist/${{ matrix.target }}/
+                    cp install/lib/libvideo_jni.so dist/${{ matrix.target }}/
+                    echo "=== Packaged Linux runtime files ==="
+                    ls -lh dist/${{ matrix.target }}
+                  elif [ "${{ runner.os }}" = "macOS" ]; then
+                    # Package only the names used by the Java loader, as regular files.
+                    # Full-version dylib files are not resources and only bloat the JAR.
+                    ffmpeg_major() {
+                      awk '/#define[[:space:]]+'"$1"'[[:space:]]+/ { print $3; exit }' "$2"
+                    }
+                    for dylib in \
+                      "libavutil.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h).dylib" \
+                      "libswscale.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h).dylib" \
+                      "libavcodec.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h).dylib" \
+                      libeac3_jni.dylib libvideo_jni.dylib; do
+                      if [ ! -s "install/lib/$dylib" ]; then
+                        echo "::error::Missing macOS runtime file: $dylib"
+                        find install/lib -maxdepth 1 -name '*.dylib' -ls || true
+                        exit 1
+                      fi
+                      cp "install/lib/$dylib" "dist/${{ matrix.target }}/$dylib"
+                    done
+                    echo "=== Packaged macOS runtime files ==="
+                    ls -lh dist/${{ matrix.target }}
+                  else
+                    find install -type f \( -name "*.dll" -o -name "*.dylib" -o -name "*.so" -o -name "*.so.*" -o -name "*eac3_jni*" -o -name "*video_jni*" \) ! -name "*.h" | while read f; do
+                      cp "$f" dist/${{ matrix.target }}/
+                    done
+                    find install -type l -name "*.so*" | while read f; do
+                      cp -P "$f" dist/${{ matrix.target }}/ 2>/dev/null || true
+                    done
+                  fi
 
-      # ── Upload artifacts ──
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: ffmpeg-media-${{ matrix.target }}
-          path: ffmpeg-media-${{ matrix.target }}.tar.gz
+                  tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
+              shell: ${{ matrix.shell }}
 
-  # ── Create release on tag ──
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/')
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: ffmpeg-media-*
-          path: artifacts
+            # ── Upload artifacts ──
+            - name: Upload artifact
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ffmpeg-media-${{ matrix.target }}
+                  path: ffmpeg-media-${{ matrix.target }}.tar.gz
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: artifacts/**/*.tar.gz
-          fail_on_unmatched_files: true
+    # ── Create release on tag ──
+    release:
+        needs: build
+        runs-on: ubuntu-latest
+        if: startsWith(github.ref, 'refs/tags/')
+        steps:
+            - uses: actions/download-artifact@v4
+              with:
+                  pattern: ffmpeg-media-*
+                  path: artifacts
+
+            - name: Create Release
+              uses: softprops/action-gh-release@v2
+              with:
+                  files: artifacts/**/*.tar.gz
+                  fail_on_unmatched_files: true
