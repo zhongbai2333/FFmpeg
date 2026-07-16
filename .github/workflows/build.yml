@@ -203,7 +203,7 @@ jobs:
 
           if [ "${{ matrix.upx }}" = "true" ]; then
             find "$JNI_OUT" -type f \( -name "*.dll" -o -name "*.so" \) | while read f; do
-              upx -9 "$f" 2>/dev/null || echo "  JNI UPX skipped: $f"
+              upx --ultra-brute "$f" 2>/dev/null || echo "  JNI UPX skipped: $f"
             done
           fi
 
