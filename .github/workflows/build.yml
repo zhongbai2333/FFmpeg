@@ -465,13 +465,15 @@ jobs:
                     return 1
                   }
 
-                  dep="$(find_dll libwinpthread-1.dll || true)"
-                  if [ -n "$dep" ]; then
-                    cp "$dep" install/bin/libwinpthread-1.dll
-                    echo "Bundled libwinpthread-1.dll from: $dep"
-                  else
-                    echo "No libwinpthread-1.dll found/needed."
-                  fi
+                  for runtime in libwinpthread-1.dll libiconv-2.dll; do
+                    dep="$(find_dll "$runtime" || true)"
+                    if [ -n "$dep" ]; then
+                      cp "$dep" "install/bin/$runtime"
+                      echo "Bundled $runtime from: $dep"
+                    else
+                      echo "No $runtime found/needed."
+                    fi
+                  done
               shell: msys2 {0}
 
             # ── Windows dependency audit ──
@@ -492,6 +494,7 @@ jobs:
                       "libstdc++-6.dll",
                   }
                   BUNDLED = {
+                      "libiconv-2.dll",
                       "libwinpthread-1.dll",
                   }
                   EXPECTED_PE_MACHINE = int(os.environ["EXPECTED_PE_MACHINE"], 0)
@@ -602,7 +605,7 @@ jobs:
               run: |
                   find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
                     case "$(basename "$f")" in
-                      libwinpthread-1.dll)
+                      libiconv-2.dll|libwinpthread-1.dll)
                         echo "Skipping runtime DLL: $f"
                         continue
                         ;;
