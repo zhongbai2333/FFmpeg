@@ -111,7 +111,7 @@ jobs:
               if: matrix.target == 'windows-x86_64'
               run: |
                   choco install upx -y --no-progress
-              shell: msys2 {0}
+              shell: pwsh
 
             # ── Configure ──
             - name: Configure FFmpeg
@@ -119,6 +119,16 @@ jobs:
                   ${{ matrix.pre-configure }}
                   if [ "${{ runner.os }}" = "macOS" ]; then
                     export MACOSX_DEPLOYMENT_TARGET=11.0
+                  fi
+                  echo "=== Build toolchain ==="
+                  echo "MSYSTEM=${MSYSTEM:-}"
+                  TOOL_CC="${{ matrix.cc }}"
+                  echo "CC=$TOOL_CC"
+                  command -v "$TOOL_CC" || true
+                  "$TOOL_CC" --version || true
+                  if [ "${{ runner.os }}" = "Windows" ]; then
+                    echo "=== Windows target triple ==="
+                    "$TOOL_CC" -dumpmachine || true
                   fi
                   ./configure \
                     --disable-everything \
