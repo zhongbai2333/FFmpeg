@@ -11,7 +11,6 @@ ffmpeg_major() {
 }
 
 AVUTIL_MAJOR="$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
-SWRESAMPLE_MAJOR="$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)"
 SWSCALE_MAJOR="$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
 AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
 
@@ -64,6 +63,7 @@ esac
     --enable-bsf=h264_mp4toannexb \
     --enable-bsf=hevc_mp4toannexb \
     --enable-swscale \
+    --disable-swresample \
     --disable-programs \
     --disable-doc \
     --disable-avdevice \
@@ -86,6 +86,12 @@ esac
 
 make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
 make install
+
+if find "$INSTALL_DIR" -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) | grep -q .; then
+    echo "ERROR: libswresample was produced despite --disable-swresample" >&2
+    find "$INSTALL_DIR" -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) -print >&2
+    exit 1
+fi
 
 # ── 2. 构建 eac3_jni (音频) ──
 echo "=== build eac3_jni ==="
@@ -171,22 +177,20 @@ if [[ "$OSTYPE" == darwin* ]]; then
     }
 
     AVUTIL_DYLIB="libavutil.${AVUTIL_MAJOR}.dylib"
-    SWRESAMPLE_DYLIB="libswresample.${SWRESAMPLE_MAJOR}.dylib"
     SWSCALE_DYLIB="libswscale.${SWSCALE_MAJOR}.dylib"
     AVCODEC_DYLIB="libavcodec.${AVCODEC_MAJOR}.dylib"
 
-    for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
+    for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
         ensure_dylib_name "$lib"
     done
 
     install_name_tool -id "@loader_path/$AVUTIL_DYLIB" "$INSTALL_DIR/lib/$AVUTIL_DYLIB"
-    install_name_tool -id "@loader_path/$SWRESAMPLE_DYLIB" "$INSTALL_DIR/lib/$SWRESAMPLE_DYLIB"
     install_name_tool -id "@loader_path/$SWSCALE_DYLIB" "$INSTALL_DIR/lib/$SWSCALE_DYLIB"
     install_name_tool -id "@loader_path/$AVCODEC_DYLIB" "$INSTALL_DIR/lib/$AVCODEC_DYLIB"
     install_name_tool -id "@loader_path/libeac3_jni.dylib" "$INSTALL_DIR/lib/libeac3_jni.dylib"
     install_name_tool -id "@loader_path/libvideo_jni.dylib" "$INSTALL_DIR/lib/libvideo_jni.dylib"
 
-    for lib in "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" libeac3_jni.dylib libvideo_jni.dylib; do
+    for lib in "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" libeac3_jni.dylib libvideo_jni.dylib; do
         install_name_tool -change "$INSTALL_DIR/lib/$AVUTIL_DYLIB" \
             "@loader_path/$AVUTIL_DYLIB" "$INSTALL_DIR/lib/$lib" || true
     done
@@ -197,7 +201,7 @@ if [[ "$OSTYPE" == darwin* ]]; then
     install_name_tool -change "$INSTALL_DIR/lib/$SWSCALE_DYLIB" \
         "@loader_path/$SWSCALE_DYLIB" "$INSTALL_DIR/lib/libvideo_jni.dylib" || true
 
-    for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" libeac3_jni.dylib libvideo_jni.dylib; do
+    for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" libeac3_jni.dylib libvideo_jni.dylib; do
         if otool -L "$INSTALL_DIR/lib/$lib" | grep -q "$INSTALL_DIR/lib"; then
             echo "ERROR: $lib still contains absolute install path" >&2
             otool -L "$INSTALL_DIR/lib/$lib" >&2
@@ -244,7 +248,6 @@ if [[ "$OSTYPE" == linux* ]]; then
         fi
     }
     AVUTIL_SO="libavutil.so.${AVUTIL_MAJOR}"
-    SWRESAMPLE_SO="libswresample.so.${SWRESAMPLE_MAJOR}"
     SWSCALE_SO="libswscale.so.${SWSCALE_MAJOR}"
     AVCODEC_SO="libavcodec.so.${AVCODEC_MAJOR}"
 
@@ -265,17 +268,17 @@ case "$OSTYPE" in
     darwin*)
         LIB_DIR="$INSTALL_DIR/bin"
         LIB_DIR="$INSTALL_DIR/bin"
-        LIBS_LIST=("libavutil.${AVUTIL_MAJOR}" "libswresample.${SWRESAMPLE_MAJOR}" "libswscale.${SWSCALE_MAJOR}" "libavcodec.${AVCODEC_MAJOR}" "libeac3_jni" "libvideo_jni")
+        LIBS_LIST=("libavutil.${AVUTIL_MAJOR}" "libswscale.${SWSCALE_MAJOR}" "libavcodec.${AVCODEC_MAJOR}" "libeac3_jni" "libvideo_jni")
         EXT=".dylib"
         ;;
     linux*)
         LIB_DIR="$INSTALL_DIR/lib"
-        LIBS_LIST=("libavutil.so.${AVUTIL_MAJOR}" "libswresample.so.${SWRESAMPLE_MAJOR}" "libswscale.so.${SWSCALE_MAJOR}" "libavcodec.so.${AVCODEC_MAJOR}" "libeac3_jni" "libvideo_jni")
+        LIBS_LIST=("libavutil.so.${AVUTIL_MAJOR}" "libswscale.so.${SWSCALE_MAJOR}" "libavcodec.so.${AVCODEC_MAJOR}" "libeac3_jni" "libvideo_jni")
         EXT=".so"
         ;;
     msys*|cygwin*|win32)
         LIB_DIR="$INSTALL_DIR/bin"
-        LIBS_LIST=("avutil-${AVUTIL_MAJOR}" "swresample-${SWRESAMPLE_MAJOR}" "swscale-${SWSCALE_MAJOR}" "avcodec-${AVCODEC_MAJOR}" "eac3_jni" "video_jni")
+        LIBS_LIST=("avutil-${AVUTIL_MAJOR}" "swscale-${SWSCALE_MAJOR}" "avcodec-${AVCODEC_MAJOR}" "eac3_jni" "video_jni")
         EXT=".dll"
         ;;
 esac

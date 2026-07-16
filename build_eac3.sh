@@ -14,6 +14,7 @@ echo "=== FFmpeg minimal E-AC-3 build ==="
     --disable-avdevice \
     --disable-avformat \
     --disable-swscale \
+    --disable-swresample \
     --disable-avfilter \
     --disable-network \
     --disable-encoders \
@@ -31,6 +32,12 @@ echo "=== FFmpeg minimal E-AC-3 build ==="
 
 make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
 make install
+
+if find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) | grep -q .; then
+    echo "ERROR: libswresample was produced despite --disable-swresample" >&2
+    find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) -print >&2
+    exit 1
+fi
 
 # Windows: UPX 压缩
 # Linux/macOS: 跳过，避免破坏 ELF/Mach-O 动态符号审计或代码签名

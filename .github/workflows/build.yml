@@ -101,6 +101,7 @@ jobs:
             --enable-bsf=h264_mp4toannexb \
             --enable-bsf=hevc_mp4toannexb \
             --enable-swscale \
+            --disable-swresample \
             --disable-programs \
             --disable-doc \
             --disable-avdevice \
@@ -150,6 +151,12 @@ jobs:
         run: |
           make -j$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)
           make install
+
+          if find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) | grep -q .; then
+            echo "::error::libswresample was produced despite --disable-swresample"
+            find install -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) -print
+            exit 1
+          fi
         shell: bash
 
       # ── Build thin JNI wrappers ──
@@ -245,11 +252,9 @@ jobs:
           }
 
           AVUTIL_MAJOR="$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
-          SWRESAMPLE_MAJOR="$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)"
           SWSCALE_MAJOR="$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
           AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
           AVUTIL_DYLIB="libavutil.${AVUTIL_MAJOR}.dylib"
-          SWRESAMPLE_DYLIB="libswresample.${SWRESAMPLE_MAJOR}.dylib"
           SWSCALE_DYLIB="libswscale.${SWSCALE_MAJOR}.dylib"
           AVCODEC_DYLIB="libavcodec.${AVCODEC_MAJOR}.dylib"
 
@@ -278,23 +283,22 @@ jobs:
             fi
           }
 
-          for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
+          for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB"; do
             ensure_dylib_name "$lib"
           done
 
-          for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
+          for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
                      libeac3_jni.dylib libvideo_jni.dylib; do
             require_file "$libdir/$lib"
           done
 
           install_name_tool -id "@loader_path/$AVUTIL_DYLIB" "$libdir/$AVUTIL_DYLIB"
-          install_name_tool -id "@loader_path/$SWRESAMPLE_DYLIB" "$libdir/$SWRESAMPLE_DYLIB"
           install_name_tool -id "@loader_path/$SWSCALE_DYLIB" "$libdir/$SWSCALE_DYLIB"
           install_name_tool -id "@loader_path/$AVCODEC_DYLIB" "$libdir/$AVCODEC_DYLIB"
           install_name_tool -id "@loader_path/libeac3_jni.dylib" "$libdir/libeac3_jni.dylib"
           install_name_tool -id "@loader_path/libvideo_jni.dylib" "$libdir/libvideo_jni.dylib"
 
-          for lib in "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
+          for lib in "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
                      libeac3_jni.dylib libvideo_jni.dylib; do
             install_name_tool -change "$PWD/install/lib/$AVUTIL_DYLIB" \
               "@loader_path/$AVUTIL_DYLIB" "$libdir/$lib" || true
@@ -307,7 +311,7 @@ jobs:
             "@loader_path/$SWSCALE_DYLIB" "$libdir/libvideo_jni.dylib" || true
 
           echo "=== macOS dylib dependencies after fix ==="
-          for lib in "$AVUTIL_DYLIB" "$SWRESAMPLE_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
+          for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
                      libeac3_jni.dylib libvideo_jni.dylib; do
             echo "--- $lib ---"
             otool -D "$libdir/$lib" || true
@@ -331,7 +335,6 @@ jobs:
           }
 
           AVUTIL_SO="libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
-          SWRESAMPLE_SO="libswresample.so.$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)"
           SWSCALE_SO="libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
           AVCODEC_SO="libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
 
@@ -578,7 +581,6 @@ jobs:
             }
             for soname in \
               "libavutil.so.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)" \
-              "libswresample.so.$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h)" \
               "libswscale.so.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)" \
               "libavcodec.so.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"; do
               target="$(readlink "install/lib/$soname" 2>/dev/null || true)"
@@ -609,7 +611,6 @@ jobs:
             }
             for dylib in \
               "libavutil.$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h).dylib" \
-              "libswresample.$(ffmpeg_major LIBSWRESAMPLE_VERSION_MAJOR libswresample/version_major.h).dylib" \
               "libswscale.$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h).dylib" \
               "libavcodec.$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h).dylib" \
               libeac3_jni.dylib libvideo_jni.dylib; do
