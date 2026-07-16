@@ -40,13 +40,13 @@ jobs:
                     # ── Linux ──
                     - os: ubuntu-latest
                       target: linux-x86_64
-                      upx: false
+                      upx: true
                       cc: gcc
                       extra-config: ""
 
                     - os: ubuntu-24.04-arm
                       target: linux-arm64
-                      upx: false
+                      upx: true
                       cc: gcc
                       extra-config: ""
 
@@ -103,6 +103,35 @@ jobs:
                   sudo apt-get update -y -qq
                   sudo apt-get install -y -qq make gcc nasm pkg-config binutils libva-dev libdrm-dev
 
+            - name: Install UPX (Linux)
+              if: runner.os == 'Linux' && matrix.upx
+              run: |
+                  set -euo pipefail
+                  UPX_VERSION=5.2.0
+                  case "$(uname -m)" in
+                    x86_64)
+                      UPX_HOST=amd64
+                      UPX_SHA256=3db5d3294707439db97866feab8d75d800f028f48481a40547411824da4288a1
+                      ;;
+                    aarch64|arm64)
+                      UPX_HOST=arm64
+                      UPX_SHA256=55d48a61e8ffd17152db871c855376cba7f08e830b37799d0947a16dff8ec36c
+                      ;;
+                    *)
+                      echo "::error::Unsupported Linux UPX host architecture: $(uname -m)"
+                      exit 1
+                      ;;
+                  esac
+                  archive="$RUNNER_TEMP/upx-${UPX_VERSION}-${UPX_HOST}_linux.tar.xz"
+                  curl --fail --location --retry 3 \
+                    "https://github.com/upx/upx/releases/download/v${UPX_VERSION}/upx-${UPX_VERSION}-${UPX_HOST}_linux.tar.xz" \
+                    --output "$archive"
+                  echo "$UPX_SHA256  $archive" | sha256sum --check --strict
+                  tar -xJf "$archive" -C "$RUNNER_TEMP"
+                  sudo install -m 0755 "$RUNNER_TEMP/upx-${UPX_VERSION}-${UPX_HOST}_linux/upx" /usr/local/bin/upx
+                  upx --version | head -n 1
+              shell: bash
+
             - name: Install tools (macOS)
               if: runner.os == 'macOS'
               run: brew install nasm
@@ -111,6 +140,11 @@ jobs:
               if: matrix.target == 'windows-x86_64'
               run: |
                   choco install upx -y --no-progress
+                  $chocoBin = 'C:\ProgramData\chocolatey\bin'
+                  if (Test-Path $chocoBin) {
+                    $chocoBin | Out-File -FilePath $env:GITHUB_PATH -Append
+                  }
+                  Get-Command upx.exe -ErrorAction Stop
               shell: pwsh
 
             # ── Configure ──
@@ -248,12 +282,6 @@ jobs:
                         -I install/include -L install/lib -lavcodec -lswscale -lavutil
                       ;;
                   esac
-
-                  if [ "${{ matrix.upx }}" = "true" ]; then
-                    find "$JNI_OUT" -type f \( -name "*.dll" -o -name "*.so" \) | while read f; do
-                      upx --ultra-brute "$f" 2>/dev/null || echo "  JNI UPX skipped: $f"
-                    done
-                  fi
 
                   find "$JNI_OUT" -type f \( -name "*eac3_jni*" -o -name "*video_jni*" \) | while read f; do
                     printf "  %-40s %6d bytes\n" "$(basename "$f")" $(stat -c%s "$f" 2>/dev/null || stat -f%z "$f" 2>/dev/null)
@@ -603,6 +631,16 @@ jobs:
             - name: UPX compress
               if: matrix.upx
               run: |
+                  UPX_BIN="$(command -v upx || command -v upx.exe || true)"
+                  if [ -z "$UPX_BIN" ] && [ -x /c/ProgramData/chocolatey/bin/upx.exe ]; then
+                    UPX_BIN=/c/ProgramData/chocolatey/bin/upx.exe
+                  fi
+                  if [ -z "$UPX_BIN" ]; then
+                    echo "::error::UPX executable was not found"
+                    exit 1
+                  fi
+                  echo "Using UPX: $UPX_BIN"
+                  "$UPX_BIN" --version | head -n 1
                   find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
                     case "$(basename "$f")" in
                       libiconv-2.dll|libwinpthread-1.dll)
@@ -611,9 +649,49 @@ jobs:
                         ;;
                     esac
                     echo "Compressing: $f"
-                    upx -9 "$f" 2>/dev/null || echo "  (skipped)"
+                    if [ "${{ runner.os }}" = "Linux" ]; then
+                      "$UPX_BIN" --preserve-build-id --ultra-brute "$f"
+                    else
+                      "$UPX_BIN" --ultra-brute "$f"
+                    fi
+                    "$UPX_BIN" -t "$f"
                   done
               shell: msys2 {0}
+
+            - name: Audit UPX-compressed Linux libraries
+              if: runner.os == 'Linux' && matrix.upx
+              run: |
+                  set -euo pipefail
+                  python3 - <<'PY'
+                  import ctypes
+                  import pathlib
+
+                  libdir = pathlib.Path("install/lib").resolve()
+
+                  def one(pattern):
+                      matches = sorted(libdir.glob(pattern))
+                      if not matches:
+                          raise RuntimeError(f"Missing compressed library: {pattern}")
+                      return matches[0]
+
+                  avutil = ctypes.CDLL(str(one("libavutil.so.*")), mode=ctypes.RTLD_GLOBAL)
+                  avcodec = ctypes.CDLL(str(one("libavcodec.so.*")), mode=ctypes.RTLD_GLOBAL)
+                  swscale = ctypes.CDLL(str(one("libswscale.so.*")), mode=ctypes.RTLD_GLOBAL)
+                  eac3_jni = ctypes.CDLL(str(libdir / "libeac3_jni.so"), mode=ctypes.RTLD_GLOBAL)
+                  video_jni = ctypes.CDLL(str(libdir / "libvideo_jni.so"), mode=ctypes.RTLD_GLOBAL)
+
+                  required = (
+                      (avutil, "av_version_info"),
+                      (avcodec, "avcodec_send_packet"),
+                      (swscale, "sws_scale"),
+                      (eac3_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_decoderOpen"),
+                      (video_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats"),
+                  )
+                  for library, symbol in required:
+                      getattr(library, symbol)
+                      print(f"Loaded symbol: {symbol}")
+                  PY
+              shell: bash
 
             # ── Show sizes ──
             - name: Show sizes
