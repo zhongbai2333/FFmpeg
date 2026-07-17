@@ -55,7 +55,8 @@ jobs:
                       target: macos-x86_64
                       upx: false
                       cc: gcc
-                      extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
+                      macho-arch: x86_64
+                      extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
                       pre-configure: |
                           export CC="clang -arch x86_64"
                           export CXX="clang++ -arch x86_64"
@@ -67,7 +68,14 @@ jobs:
                       target: macos-arm64
                       upx: false
                       cc: gcc
-                      extra-config: "--enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox"
+                      macho-arch: arm64
+                      extra-config: "--arch=arm64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch arm64 -mmacosx-version-min=11.0' --extra-ldflags='-arch arm64 -mmacosx-version-min=11.0'"
+                      pre-configure: |
+                          export CC="clang -arch arm64"
+                          export CXX="clang++ -arch arm64"
+                          export CFLAGS="-arch arm64 -mmacosx-version-min=11.0"
+                          export LDFLAGS="-arch arm64 -mmacosx-version-min=11.0"
+                          export MACOSX_DEPLOYMENT_TARGET=11.0
 
         steps:
             - uses: actions/checkout@v4
@@ -274,10 +282,10 @@ jobs:
                         -I install/include -L install/lib -lavcodec -lswscale -lavutil
                       ;;
                     macos-arm64)
-                      "$CC_BIN" -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
+                      "$CC_BIN" -arch arm64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libeac3_jni.dylib" eac3_jni.c \
                         -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
                         -I install/include -L install/lib -lavcodec -lavutil
-                      "$CC_BIN" -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
+                      "$CC_BIN" -arch arm64 -mmacosx-version-min=11.0 -shared -o "$JNI_OUT/libvideo_jni.dylib" video_jni.c \
                         -I"$JAVA_HOME/include" -I"$JAVA_HOME/include/darwin" \
                         -I install/include -L install/lib -lavcodec -lswscale -lavutil
                       ;;
@@ -379,17 +387,84 @@ jobs:
                   install_name_tool -change "$PWD/install/lib/$SWSCALE_DYLIB" \
                     "@loader_path/$SWSCALE_DYLIB" "$libdir/libvideo_jni.dylib" || true
 
+                  # install_name_tool invalidates the existing Mach-O signature.
+                  # Apply an ad-hoc signature so Apple Silicon dyld accepts the extracted dylibs.
+                  for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
+                             libeac3_jni.dylib libvideo_jni.dylib; do
+                    codesign --force --sign - "$libdir/$lib"
+                  done
+
                   echo "=== macOS dylib dependencies after fix ==="
                   for lib in "$AVUTIL_DYLIB" "$SWSCALE_DYLIB" "$AVCODEC_DYLIB" \
                              libeac3_jni.dylib libvideo_jni.dylib; do
                     echo "--- $lib ---"
                     otool -D "$libdir/$lib" || true
                     otool -L "$libdir/$lib"
-                    if otool -L "$libdir/$lib" | grep -q "$PWD/install/lib"; then
-                      echo "::error::$lib still contains build-machine absolute install path"
+                    archs="$(lipo -archs "$libdir/$lib")"
+                    if [ "$archs" != "${{ matrix.macho-arch }}" ]; then
+                      echo "::error::$lib architecture mismatch: expected ${{ matrix.macho-arch }}, got $archs"
+                      exit 1
+                    fi
+                    otool -L "$libdir/$lib" | tail -n +2 | awk '{ print $1 }' | while IFS= read -r dependency; do
+                      case "$dependency" in
+                        @loader_path/*|/usr/lib/*|/System/Library/*)
+                          ;;
+                        *)
+                          echo "::error::$lib contains a non-portable dependency: $dependency"
+                          exit 1
+                          ;;
+                      esac
+                    done
+                    if ! vtool -show-build "$libdir/$lib" | grep -Eq 'minos[[:space:]]+11\.0($|\.0)'; then
+                      echo "::error::$lib does not target macOS 11.0"
+                      vtool -show-build "$libdir/$lib" || true
+                      exit 1
+                    fi
+                    if ! codesign --verify --verbose=2 "$libdir/$lib"; then
+                      echo "::error::$lib has an invalid Mach-O code signature"
                       exit 1
                     fi
                   done
+              shell: bash
+
+            - name: Audit macOS dylib runtime loading
+              if: runner.os == 'macOS' && ((runner.arch == 'ARM64' && matrix.macho-arch == 'arm64') || (runner.arch == 'X64' && matrix.macho-arch == 'x86_64'))
+              run: |
+                  set -euo pipefail
+                  python3 - <<'PY'
+                  import ctypes
+                  import pathlib
+                  import re
+
+                  libdir = pathlib.Path("install/lib").resolve()
+
+                  def major(header, macro):
+                      match = re.search(
+                          rf"^#define\s+{macro}\s+(\d+)",
+                          pathlib.Path(header).read_text(),
+                          re.MULTILINE,
+                      )
+                      if not match:
+                          raise RuntimeError(f"Missing {macro} in {header}")
+                      return match.group(1)
+
+                  avutil = ctypes.CDLL(str(libdir / f"libavutil.{major('libavutil/version.h', 'LIBAVUTIL_VERSION_MAJOR')}.dylib"), mode=ctypes.RTLD_GLOBAL)
+                  avcodec = ctypes.CDLL(str(libdir / f"libavcodec.{major('libavcodec/version_major.h', 'LIBAVCODEC_VERSION_MAJOR')}.dylib"), mode=ctypes.RTLD_GLOBAL)
+                  swscale = ctypes.CDLL(str(libdir / f"libswscale.{major('libswscale/version_major.h', 'LIBSWSCALE_VERSION_MAJOR')}.dylib"), mode=ctypes.RTLD_GLOBAL)
+                  eac3_jni = ctypes.CDLL(str(libdir / "libeac3_jni.dylib"), mode=ctypes.RTLD_GLOBAL)
+                  video_jni = ctypes.CDLL(str(libdir / "libvideo_jni.dylib"), mode=ctypes.RTLD_GLOBAL)
+
+                  required = (
+                      (avutil, "av_version_info"),
+                      (avcodec, "avcodec_send_packet"),
+                      (swscale, "sws_scale"),
+                      (eac3_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_decoderOpen"),
+                      (video_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats"),
+                  )
+                  for library, symbol in required:
+                      getattr(library, symbol)
+                      print(f"Loaded symbol: {symbol}")
+                  PY
               shell: bash
 
             # ── Linux ELF audit: fail fast before packaging broken hidden-symbol libraries ──
