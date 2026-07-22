@@ -41,13 +41,13 @@ jobs:
                       target: linux-x86_64
                       upx: true
                       cc: gcc
-                      extra-config: ""
+                      extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=av1_vaapi"
 
                     - os: ubuntu-24.04-arm
                       target: linux-arm64
                       upx: true
                       cc: gcc
-                      extra-config: ""
+                      extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=av1_vaapi"
 
                     # ── macOS (不要 UPX —— 会破坏代码签名) ──
                     - os: macos-latest
@@ -208,6 +208,11 @@ jobs:
                   grep -q '^#define CONFIG_HEVC_DECODER 0$' config_components.h
                   grep -q '^#define CONFIG_HEVC_PARSER 0$' config_components.h
                   grep -q '^#define CONFIG_HEVC_MP4TOANNEXB_BSF 0$' config_components.h
+                  if [ "${{ runner.os }}" = "Linux" ]; then
+                    grep -q '^#define CONFIG_VAAPI 1$' config.h
+                    grep -q '^#define CONFIG_H264_VAAPI_HWACCEL 1$' config_components.h
+                    grep -q '^#define CONFIG_AV1_VAAPI_HWACCEL 1$' config_components.h
+                  fi
               shell: msys2 {0}
 
             # ── Force-remove pthread from MinGW toolchain (Windows only) ──
