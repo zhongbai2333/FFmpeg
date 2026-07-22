@@ -4,7 +4,6 @@ on:
     push:
         tags:
             - "media-min-*"
-            - "eac3-min-*"
     workflow_dispatch:
 
 permissions:
@@ -26,7 +25,7 @@ jobs:
                       pacboy: "toolchain:p nasm:p pkgconf:p"
                       cc: gcc
                       pe-machine: "0x8664"
-                      extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
+                      extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=av1_d3d11va --enable-hwaccel=av1_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=av1_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
                     - os: windows-11-arm
                       target: windows-arm64
@@ -35,7 +34,7 @@ jobs:
                       pacboy: "toolchain:p pkgconf:p"
                       cc: clang
                       pe-machine: "0xaa64"
-                      extra-config: "--arch=aarch64 --target-os=mingw32 --cc=clang --cxx=clang++ --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip --extra-cflags='--target=aarch64-w64-windows-gnu' --extra-ldflags='--target=aarch64-w64-windows-gnu' --disable-x86asm --enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=hevc_d3d11va --enable-hwaccel=hevc_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=hevc_dxva2 --pkg-config-flags='--static'"
+                      extra-config: "--arch=aarch64 --target-os=mingw32 --cc=clang --cxx=clang++ --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip --extra-cflags='--target=aarch64-w64-windows-gnu' --extra-ldflags='--target=aarch64-w64-windows-gnu' --disable-x86asm --enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=av1_d3d11va --enable-hwaccel=av1_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=av1_dxva2 --pkg-config-flags='--static'"
 
                     # ── Linux ──
                     - os: ubuntu-latest
@@ -56,7 +55,7 @@ jobs:
                       upx: false
                       cc: gcc
                       macho-arch: x86_64
-                      extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
+                      extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=av1_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
                       pre-configure: |
                           export CC="clang -arch x86_64"
                           export CXX="clang++ -arch x86_64"
@@ -69,7 +68,7 @@ jobs:
                       upx: false
                       cc: gcc
                       macho-arch: arm64
-                      extra-config: "--arch=arm64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=hevc_videotoolbox --extra-cflags='-arch arm64 -mmacosx-version-min=11.0' --extra-ldflags='-arch arm64 -mmacosx-version-min=11.0'"
+                      extra-config: "--arch=arm64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=av1_videotoolbox --extra-cflags='-arch arm64 -mmacosx-version-min=11.0' --extra-ldflags='-arch arm64 -mmacosx-version-min=11.0'"
                       pre-configure: |
                           export CC="clang -arch arm64"
                           export CXX="clang++ -arch arm64"
@@ -176,12 +175,11 @@ jobs:
                     --disable-everything \
                     --enable-decoder=eac3 \
                     --enable-decoder=h264 \
-                    --enable-decoder=hevc \
+                    --enable-decoder=av1 \
                     --enable-parser=ac3 \
                     --enable-parser=h264 \
-                    --enable-parser=hevc \
+                    --enable-parser=av1 \
                     --enable-bsf=h264_mp4toannexb \
-                    --enable-bsf=hevc_mp4toannexb \
                     --enable-swscale \
                     --disable-swresample \
                     --disable-programs \
@@ -204,7 +202,12 @@ jobs:
                   echo "=== Configured asm/SIMD ==="
                   grep -E 'HAVE_(ASM|X86ASM|MMX|MMXEXT|SSE|SSE2|SSSE3|AVX|AVX2|AVX512|NEON)' config.h || true
                   echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
-                  grep -E 'CONFIG_(EAC3|H264|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|HEVC_D3D11VA|HEVC_D3D11VA2|H264_DXVA2|HEVC_DXVA2|H264_VAAPI|HEVC_VAAPI|H264_VIDEOTOOLBOX|HEVC_VIDEOTOOLBOX)' config.h || true
+                  grep -E 'CONFIG_(EAC3|H264|AV1|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|AV1_D3D11VA|AV1_D3D11VA2|H264_DXVA2|AV1_DXVA2|H264_VAAPI|AV1_VAAPI|H264_VIDEOTOOLBOX|AV1_VIDEOTOOLBOX)' config.h || true
+                  grep -q '^#define CONFIG_AV1_DECODER 1$' config_components.h
+                  grep -q '^#define CONFIG_H264_DECODER 1$' config_components.h
+                  grep -q '^#define CONFIG_HEVC_DECODER 0$' config_components.h
+                  grep -q '^#define CONFIG_HEVC_PARSER 0$' config_components.h
+                  grep -q '^#define CONFIG_HEVC_MP4TOANNEXB_BSF 0$' config_components.h
               shell: msys2 {0}
 
             # ── Force-remove pthread from MinGW toolchain (Windows only) ──
@@ -843,6 +846,10 @@ jobs:
                     done
                   fi
 
+                  # Keep the license next to every independently downloadable
+                  # native bundle, not only in the consuming mod JAR.
+                  cp COPYING.LGPLv2.1 dist/${{ matrix.target }}/FFmpeg-LGPL-2.1.txt
+
                   tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
               shell: msys2 {0}
 
@@ -859,13 +866,54 @@ jobs:
         runs-on: ubuntu-latest
         if: startsWith(github.ref, 'refs/tags/')
         steps:
+            - uses: actions/checkout@v4
+              with:
+                  fetch-depth: 0
+
             - uses: actions/download-artifact@v4
               with:
                   pattern: ffmpeg-media-*
                   path: artifacts
 
+            - name: Prepare corresponding source materials
+              run: |
+                  set -euo pipefail
+                  mkdir -p release-assets
+                  find artifacts -type f -name 'ffmpeg-media-*.tar.gz' -exec cp {} release-assets/ \;
+
+                  git remote add upstream-release https://github.com/FFmpeg/FFmpeg.git
+                  git fetch --no-tags upstream-release master
+                  upstream_base="$(git merge-base HEAD upstream-release/master)"
+
+                  git diff --binary "$upstream_base" HEAD > release-assets/changes.diff
+                  git archive --format=tar.gz \
+                    --prefix="ffmpeg-media-source-${GITHUB_REF_NAME}/" \
+                    --output="release-assets/ffmpeg-media-source-${GITHUB_REF_NAME}.tar.gz" \
+                    HEAD
+
+                  {
+                    echo "release_tag=${GITHUB_REF_NAME}"
+                    echo "source_commit=$(git rev-parse HEAD)"
+                    echo "upstream_base=${upstream_base}"
+                    echo
+                    echo "The complete corresponding source is in the source archive."
+                    echo "changes.diff records this fork's changes relative to upstream_base."
+                    echo "The six-platform build definition is .github/workflows/build.yml."
+                    echo "FFmpeg is configured without --enable-gpl and --enable-nonfree."
+                  } > release-assets/BUILD-PROVENANCE.txt
+
+                  (
+                    cd release-assets
+                    sha256sum *.tar.gz changes.diff BUILD-PROVENANCE.txt > SHA256SUMS.txt
+                    sha256sum --check SHA256SUMS.txt
+                  )
+
             - name: Create Release
               uses: softprops/action-gh-release@v2
               with:
-                  files: artifacts/**/*.tar.gz
+                  files: |
+                      release-assets/*.tar.gz
+                      release-assets/changes.diff
+                      release-assets/BUILD-PROVENANCE.txt
+                      release-assets/SHA256SUMS.txt
                   fail_on_unmatched_files: true

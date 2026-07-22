@@ -1,5 +1,5 @@
 #!/bin/bash
-# 构建最小 FFmpeg + JNI: E-AC-3 音频 + H.264/HEVC 视频
+# 构建最小 FFmpeg + JNI: E-AC-3 音频 + H.264/AV1 视频
 # 需要: gcc/clang, make, nasm, upx (可选), JDK
 set -euo pipefail
 
@@ -14,7 +14,7 @@ AVUTIL_MAJOR="$(ffmpeg_major LIBAVUTIL_VERSION_MAJOR libavutil/version.h)"
 SWSCALE_MAJOR="$(ffmpeg_major LIBSWSCALE_VERSION_MAJOR libswscale/version_major.h)"
 AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.h)"
 
-echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + HEVC) ==="
+echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + AV1) ==="
 
 HWACCEL_CONFIG=()
 ENABLE_LINUX_VAAPI="${ENABLE_LINUX_VAAPI:-1}"
@@ -22,7 +22,7 @@ case "$OSTYPE" in
     darwin*)
         HWACCEL_CONFIG+=(
             --enable-hwaccel=h264_videotoolbox
-            --enable-hwaccel=hevc_videotoolbox
+            --enable-hwaccel=av1_videotoolbox
         )
         ;;
     linux*)
@@ -33,7 +33,7 @@ case "$OSTYPE" in
             HWACCEL_CONFIG+=(
                 --enable-vaapi
                 --enable-hwaccel=h264_vaapi
-                --enable-hwaccel=hevc_vaapi
+                --enable-hwaccel=av1_vaapi
             )
         fi
         ;;
@@ -43,10 +43,10 @@ case "$OSTYPE" in
             --enable-dxva2
             --enable-hwaccel=h264_d3d11va
             --enable-hwaccel=h264_d3d11va2
-            --enable-hwaccel=hevc_d3d11va
-            --enable-hwaccel=hevc_d3d11va2
+            --enable-hwaccel=av1_d3d11va
+            --enable-hwaccel=av1_d3d11va2
             --enable-hwaccel=h264_dxva2
-            --enable-hwaccel=hevc_dxva2
+            --enable-hwaccel=av1_dxva2
         )
         ;;
 esac
@@ -56,12 +56,11 @@ esac
     --disable-everything \
     --enable-decoder=eac3 \
     --enable-decoder=h264 \
-    --enable-decoder=hevc \
+    --enable-decoder=av1 \
     --enable-parser=ac3 \
     --enable-parser=h264 \
-    --enable-parser=hevc \
+    --enable-parser=av1 \
     --enable-bsf=h264_mp4toannexb \
-    --enable-bsf=hevc_mp4toannexb \
     --enable-swscale \
     --disable-swresample \
     --disable-programs \

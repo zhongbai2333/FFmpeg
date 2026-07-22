@@ -1,8 +1,7 @@
 /**
  * 视频解码薄 JNI 包装 —— 直接调用 FFmpeg libavcodec / libswscale。
  *
- * 当前 Java 侧接口默认打开 H.264 解码器；FFmpeg 主构建同时包含 HEVC，
- * 方便后续扩展 VideoJni.decoderOpenForCodec(codecId, w, h)。
+ * Java 侧按 B站 codecid 打开 H.264 或 AV1 解码器；HEVC 和未知编码被显式拒绝。
  *
  * 输出格式: RGBA packed (AV_PIX_FMT_RGBA) 或 packed YUV420P (Y + U + V)，可选择缩放。
  */
@@ -297,20 +296,25 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     enum AVCodecID av_codec_id;
     switch (codec_id)
     {
-    case 12:
-        av_codec_id = AV_CODEC_ID_HEVC;
+    case 13:
+        av_codec_id = AV_CODEC_ID_AV1;
         break;
     case 7:
-    default:
         av_codec_id = AV_CODEC_ID_H264;
         break;
+    case 12:
+        throwException(env, "HEVC 解码已禁用");
+        return 0;
+    default:
+        throwException(env, "不支持的视频 codecId（仅支持 7=H.264, 13=AV1）");
+        return 0;
     }
 
     const AVCodec *codec = avcodec_find_decoder(av_codec_id);
     if (!codec)
     {
-        throwException(env, av_codec_id == AV_CODEC_ID_HEVC
-                                ? "FFmpeg 未包含 HEVC 解码器"
+        throwException(env, av_codec_id == AV_CODEC_ID_AV1
+                    ? "FFmpeg 未包含 AV1 解码器"
                                 : "FFmpeg 未包含 H.264 解码器");
         return 0;
     }
@@ -360,7 +364,20 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     enum AVHWDeviceType requested = requestedDeviceType(hwaccel_name);
     if (hwaccel_name && hwaccel_name[0] && strcmp(hwaccel_name, "none") != 0 && strcmp(hwaccel_name, "off") != 0)
     {
-        tryEnableHwaccel(codec, ctx, h, requested);
+        int enabled = tryEnableHwaccel(codec, ctx, h, requested);
+        int strict_request = strcmp(hwaccel_name, "auto") != 0;
+        if (!enabled && strict_request)
+        {
+            av_packet_free(&h->packet);
+            av_frame_free(&h->decode_frame);
+            av_frame_free(&h->transfer_frame);
+            av_frame_free(&h->rgb_frame);
+            av_frame_free(&h->yuv_frame);
+            avcodec_free_context(&h->codec_ctx);
+            free(h);
+            throwException(env, "请求的硬件视频解码后端不可用");
+            return 0;
+        }
     }
 
     if (avcodec_open2(ctx, codec, NULL) < 0)
@@ -390,7 +407,7 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpe
     return decoderOpenForCodec(env, 7, target_width, target_height, "none");
 }
 
-/* ── decoderOpenForCodec: 预留给后续 Java 侧按 B站 codecid 选择 H.264/HEVC ── */
+/* ── decoderOpenForCodec: 按 B站 codecid 选择 H.264/AV1 ── */
 
 JNIEXPORT jlong JNICALL
 Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_decoderOpenForCodec(
