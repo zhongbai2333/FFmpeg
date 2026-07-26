@@ -1696,37 +1696,6 @@ test_exec(){
     test_ld "cc" "$@" && { enabled cross_compile || $TMPE >> $logfile 2>&1; }
 }
 
-check_exec_crash(){
-    log check_exec_crash "$@"
-    code=$(cat)
-
-    # exit() is not async signal safe.  _Exit (C99) and _exit (POSIX)
-    # are safe but may not be available everywhere.  Thus we use
-    # raise(SIGTERM) instead.  The check is run in a subshell so we
-    # can redirect the "Terminated" message from the shell.  SIGBUS
-    # is not defined by standard C so it is used conditionally.
-
-    (test_exec "$@") >> $logfile 2>&1 <<EOF
-#include <signal.h>
-static void sighandler(int sig){
-    raise(SIGTERM);
-}
-int foo(void){
-    $code
-}
-int (*func_ptr)(void) = foo;
-int main(void){
-    signal(SIGILL, sighandler);
-    signal(SIGFPE, sighandler);
-    signal(SIGSEGV, sighandler);
-#ifdef SIGBUS
-    signal(SIGBUS, sighandler);
-#endif
-    return func_ptr();
-}
-EOF
-}
-
 check_type(){
     log check_type "$@"
     headers=$1
@@ -7423,7 +7392,8 @@ enabled libopenh264       && require_pkg_config libopenh264 "openh264 >= 1.3.0" 
 enabled libopenjpeg       && { check_pkg_config libopenjpeg "libopenjp2 >= 2.1.0" openjpeg.h opj_version ||
                                { require_pkg_config libopenjpeg "libopenjp2 >= 2.1.0" openjpeg.h opj_version -DOPJ_STATIC && add_cppflags -DOPJ_STATIC; } }
 enabled libopenmpt        && require_pkg_config libopenmpt "libopenmpt >= 0.2.6557" libopenmpt/libopenmpt.h openmpt_module_create -lstdc++ && append libopenmpt_extralibs "-lstdc++"
-enabled libopenvino       && { { check_pkg_config libopenvino openvino openvino/c/openvino.h ov_core_create && enable openvino2; } ||
+enabled libopenvino       && { { { check_pkg_config libopenvino openvino openvino/c/openvino.h ov_core_create ||
+                                  require libopenvino openvino/c/openvino.h ov_core_create -lopenvino_c; } && enable openvino2; } ||
                                 { check_pkg_config libopenvino openvino c_api/ie_c_api.h ie_c_api_version ||
                                   require libopenvino c_api/ie_c_api.h ie_c_api_version -linference_engine_c_api; } }
 enabled libopus           && {
