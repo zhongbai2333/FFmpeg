@@ -8,6 +8,8 @@ version <next>:
 - LCEVC payload merging bitstream filter
 - MVR demuxer
 - latticepal filter
+- DVD-Audio LPCM decoder and demuxing support
+- AVFoundation input device selection by unique ID and USB serial number
 
 
 version 9.0:
