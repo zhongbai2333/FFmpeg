@@ -22,7 +22,7 @@ jobs:
                       target: windows-x86_64
                       upx: true
                       msystem: UCRT64
-                      pacboy: "toolchain:p nasm:p pkgconf:p upx:p"
+                      pacboy: "toolchain:p nasm:p pkgconf:p diffutils:p upx:p"
                       cc: gcc
                       runner_arch: X64
                       pe-machine: "0x8664"
@@ -32,7 +32,7 @@ jobs:
                       target: windows-arm64
                       upx: false
                       msystem: CLANGARM64
-                      pacboy: "toolchain:p pkgconf:p"
+                      pacboy: "toolchain:p pkgconf:p diffutils:p"
                       cc: clang
                       runner_arch: ARM64
                       pe-machine: "0xaa64"
@@ -234,7 +234,7 @@ jobs:
                   grep -E 'CONFIG_(EAC3|H264|AV1|LIBDAV1D|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|AV1_D3D11VA|AV1_D3D11VA2|H264_DXVA2|AV1_DXVA2|H264_VAAPI|AV1_VAAPI|H264_VIDEOTOOLBOX|AV1_VIDEOTOOLBOX)' config.h || true
                   grep -q '^#define CONFIG_AV1_DECODER 1$' config_components.h
                   grep -q '^#define CONFIG_LIBDAV1D_DECODER 0$' config_components.h
-                  grep -q '^#define HAVE_ICONV 0$' config.h
+                  grep -q '^#define CONFIG_ICONV 0$' config.h
                   grep -q '^#define CONFIG_H264_DECODER 1$' config_components.h
                   grep -q '^#define CONFIG_HEVC_DECODER 0$' config_components.h
                   grep -q '^#define CONFIG_HEVC_PARSER 0$' config_components.h
