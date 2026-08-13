@@ -39,11 +39,11 @@ jobs:
             extra-config: ""
             shell: bash
           - target: macos-arm64
-            os: macos-latest
+            os: macos-15
             extra-config: ""
             shell: bash
           - target: macos-x86_64
-            os: macos-latest
+            os: macos-15-intel
             extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile"
             pre-configure: |
               export CC="clang -arch x86_64"

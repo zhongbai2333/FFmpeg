@@ -310,12 +310,31 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
         return 0;
     }
 
-    const AVCodec *codec = avcodec_find_decoder(av_codec_id);
+    int software_av1_requested = av_codec_id == AV_CODEC_ID_AV1
+        && (!hwaccel_name || !hwaccel_name[0]
+            || strcmp(hwaccel_name, "none") == 0
+            || strcmp(hwaccel_name, "off") == 0);
+    const AVCodec *codec;
+    if (av_codec_id == AV_CODEC_ID_AV1)
+    {
+        /* Keep hardware AV1 on FFmpeg's native decoder. libdav1d exposes no
+         * AVHWDevice configs, so choosing only by codec id would make decoder
+         * selection depend on registration order and silently break strict
+         * hardware requests. */
+        codec = avcodec_find_decoder_by_name(software_av1_requested ? "libdav1d" : "av1");
+    }
+    else
+    {
+        codec = avcodec_find_decoder(av_codec_id);
+    }
     if (!codec)
     {
-        throwException(env, av_codec_id == AV_CODEC_ID_AV1
-                    ? "FFmpeg 未包含 AV1 解码器"
-                                : "FFmpeg 未包含 H.264 解码器");
+        if (software_av1_requested)
+            throwException(env, "FFmpeg 未包含 libdav1d 软件 AV1 解码器");
+        else
+            throwException(env, av_codec_id == AV_CODEC_ID_AV1
+                        ? "FFmpeg 未包含原生 AV1 硬件解码器"
+                        : "FFmpeg 未包含 H.264 解码器");
         return 0;
     }
 
@@ -346,7 +365,8 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     h->hw_device_type = AV_HWDEVICE_TYPE_NONE;
     h->yuv_sws_dst_format = AV_PIX_FMT_NONE;
     h->last_frame_pts_nanos = AV_NOPTS_VALUE;
-    snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", "cpu");
+    snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s",
+             software_av1_requested ? "cpu(libdav1d)" : "cpu");
 
     if (!h->packet || !h->decode_frame || !h->transfer_frame || !h->rgb_frame || !h->yuv_frame)
     {
@@ -1362,6 +1382,32 @@ Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getLastFra
         return -1;
     }
     return h->last_frame_pts_nanos != AV_NOPTS_VALUE ? (jlong)h->last_frame_pts_nanos : -1;
+}
+
+/* ── end-of-stream drain ── */
+
+JNIEXPORT jint JNICALL
+Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendEndOfStream(
+    JNIEnv *env, jclass cls, jlong handle)
+{
+    VideoDecoderHandle *h = (VideoDecoderHandle *)(size_t)handle;
+    if (!h || !h->codec_ctx)
+    {
+        throwException(env, "解码器句柄无效");
+        return -1;
+    }
+
+    av_packet_unref(h->packet);
+    int ret = avcodec_send_packet(h->codec_ctx, NULL);
+    if (ret == 0 || ret == AVERROR_EOF)
+    {
+        return 0;
+    }
+    if (ret == AVERROR(EAGAIN))
+    {
+        return 1;
+    }
+    return -1;
 }
 
 /* ── flush ── */

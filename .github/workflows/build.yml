@@ -50,7 +50,7 @@ jobs:
                       extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=av1_vaapi"
 
                     # ── macOS (不要 UPX —— 会破坏代码签名) ──
-                    - os: macos-latest
+                    - os: macos-15-intel
                       target: macos-x86_64
                       upx: false
                       cc: gcc
@@ -63,7 +63,7 @@ jobs:
                           export LDFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
                           export MACOSX_DEPLOYMENT_TARGET=11.0
 
-                    - os: macos-latest
+                    - os: macos-15
                       target: macos-arm64
                       upx: false
                       cc: gcc
@@ -79,11 +79,26 @@ jobs:
         steps:
             - uses: actions/checkout@v4
 
+            - name: Checkout pinned dav1d 1.5.4
+              uses: actions/checkout@v4
+              with:
+                  repository: videolan/dav1d
+                  ref: 54706fc6bc0cdecab7e9593974a4039cc038fca7
+                  path: third_party/dav1d
+                  persist-credentials: false
+
             # ── JDK (for JNI headers) ──
             - uses: actions/setup-java@v4
               with:
                   distribution: "temurin"
                   java-version: "21"
+
+            - uses: actions/setup-python@v5
+              with:
+                  python-version: "3.13"
+
+            - name: Install pinned Meson/Ninja
+              run: python -m pip install --disable-pip-version-check meson==1.7.0 ninja==1.11.1.4
 
             - uses: msys2/setup-msys2@v2
               if: runner.os == 'Windows'
@@ -154,6 +169,34 @@ jobs:
                   Get-Command upx.exe -ErrorAction Stop
               shell: pwsh
 
+            - name: Build pinned static dav1d
+              run: |
+                  set -euo pipefail
+                  ${{ matrix.pre-configure }}
+                  if [ "${{ runner.os }}" = "macOS" ]; then
+                    export MACOSX_DEPLOYMENT_TARGET=11.0
+                  fi
+                  export CC="${CC:-${{ matrix.cc }}}"
+                  rm -rf dav1d-build dav1d-install
+                  meson setup dav1d-build third_party/dav1d \
+                    --prefix="$PWD/dav1d-install" \
+                    --libdir=lib \
+                    --default-library=static \
+                    --buildtype=release \
+                    -Db_staticpic=true \
+                    -Denable_tools=false \
+                    -Denable_examples=false \
+                    -Denable_tests=false \
+                    -Denable_docs=false
+                  meson compile -C dav1d-build
+                  meson install -C dav1d-build
+                  test "$(PKG_CONFIG_PATH="$PWD/dav1d-install/lib/pkgconfig" pkg-config --modversion dav1d)" = "1.5.4"
+                  test -s third_party/dav1d/COPYING
+                  echo "PKG_CONFIG_PATH=$PWD/dav1d-install/lib/pkgconfig" >> "$GITHUB_ENV"
+                  echo "=== Static dav1d archive ==="
+                  find dav1d-install -type f -print
+              shell: msys2 {0}
+
             # ── Configure ──
             - name: Configure FFmpeg
               run: |
@@ -176,6 +219,8 @@ jobs:
                     --enable-decoder=eac3 \
                     --enable-decoder=h264 \
                     --enable-decoder=av1 \
+                    --enable-decoder=libdav1d \
+                    --enable-libdav1d \
                     --enable-parser=ac3 \
                     --enable-parser=h264 \
                     --enable-parser=av1 \
@@ -195,6 +240,7 @@ jobs:
                     --enable-small \
                     --disable-debug \
                     --enable-shared \
+                    --pkg-config-flags=--static \
                     --prefix="$PWD/install" \
                     ${{ matrix.extra-config }}
                   echo "=== Configured threading model ==="
@@ -202,8 +248,9 @@ jobs:
                   echo "=== Configured asm/SIMD ==="
                   grep -E 'HAVE_(ASM|X86ASM|MMX|MMXEXT|SSE|SSE2|SSSE3|AVX|AVX2|AVX512|NEON)' config.h || true
                   echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
-                  grep -E 'CONFIG_(EAC3|H264|AV1|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|AV1_D3D11VA|AV1_D3D11VA2|H264_DXVA2|AV1_DXVA2|H264_VAAPI|AV1_VAAPI|H264_VIDEOTOOLBOX|AV1_VIDEOTOOLBOX)' config.h || true
+                  grep -E 'CONFIG_(EAC3|H264|AV1|LIBDAV1D|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|AV1_D3D11VA|AV1_D3D11VA2|H264_DXVA2|AV1_DXVA2|H264_VAAPI|AV1_VAAPI|H264_VIDEOTOOLBOX|AV1_VIDEOTOOLBOX)' config.h || true
                   grep -q '^#define CONFIG_AV1_DECODER 1$' config_components.h
+                  grep -q '^#define CONFIG_LIBDAV1D_DECODER 1$' config_components.h
                   grep -q '^#define CONFIG_H264_DECODER 1$' config_components.h
                   grep -q '^#define CONFIG_HEVC_DECODER 0$' config_components.h
                   grep -q '^#define CONFIG_HEVC_PARSER 0$' config_components.h
@@ -312,16 +359,19 @@ jobs:
                     VIDEO_JNI="install/bin/video_jni.dll"
                     objdump -p "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
                     objdump -p "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+                    objdump -p "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendEndOfStream'
                   elif [ "${{ runner.os }}" = "macOS" ]; then
                     AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil*.dylib' | head -n 1)"
                     VIDEO_JNI="install/lib/libvideo_jni.dylib"
                     nm -gU "$AVUTIL_LIB" | grep -F '_av_get_memory_stats'
                     nm -gU "$VIDEO_JNI" | grep -F '_Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+                    nm -gU "$VIDEO_JNI" | grep -F '_Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendEndOfStream'
                   else
                     AVUTIL_LIB="$(find install/lib -maxdepth 1 -type f -name 'libavutil.so*' | head -n 1)"
                     VIDEO_JNI="install/lib/libvideo_jni.so"
                     objdump -T "$AVUTIL_LIB" | grep -F 'av_get_memory_stats'
                     objdump -T "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats'
+                    objdump -T "$VIDEO_JNI" | grep -F 'Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendEndOfStream'
                   fi
               shell: msys2 {0}
 
@@ -433,6 +483,10 @@ jobs:
                       exit 1
                     fi
                   done
+                  if otool -L "$libdir/$AVCODEC_DYLIB" | grep -qi 'dav1d'; then
+                    echo "::error::libavcodec must statically contain dav1d, not depend on a dav1d dylib"
+                    exit 1
+                  fi
               shell: bash
 
             - name: Audit macOS dylib runtime loading
@@ -468,6 +522,7 @@ jobs:
                       (swscale, "sws_scale"),
                       (eac3_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_decoderOpen"),
                       (video_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats"),
+                      (video_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendEndOfStream"),
                   )
                   for library, symbol in required:
                       getattr(library, symbol)
@@ -538,6 +593,11 @@ jobs:
                   require_needed libvideo_jni.so "$AVCODEC_SO"
                   require_needed libvideo_jni.so "$AVUTIL_SO"
                   require_needed libvideo_jni.so "$SWSCALE_SO"
+
+                  if readelf -d "$libdir/$AVCODEC_SO" | grep -qi 'dav1d'; then
+                    echo "::error::libavcodec must statically contain dav1d, not have a libdav1d DT_NEEDED entry"
+                    exit 1
+                  fi
 
                   for lib in "$AVUTIL_SO" "$AVCODEC_SO" "$SWSCALE_SO" libeac3_jni.so libvideo_jni.so; do
                     echo "=== $lib dynamic section ==="
@@ -679,6 +739,7 @@ jobs:
                       for name in imported:
                           print(f"  {name}")
                       forbidden = sorted(name for name in imported if name.lower() in FORBIDDEN)
+                      forbidden.extend(name for name in imported if "dav1d" in name.lower())
                       if forbidden:
                           bad.append((dll, forbidden))
                       for name in imported:
@@ -769,6 +830,7 @@ jobs:
                       (swscale, "sws_scale"),
                       (eac3_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_Eac3Jni_decoderOpen"),
                       (video_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_getNativeMemoryStats"),
+                      (video_jni, "Java_com_zhongbai233_net_1music_1can_1play_1bili_media_codec_VideoJni_sendEndOfStream"),
                   )
                   for library, symbol in required:
                       getattr(library, symbol)
@@ -854,6 +916,7 @@ jobs:
                   # Keep the license next to every independently downloadable
                   # native bundle, not only in the consuming mod JAR.
                   cp COPYING.LGPLv2.1 dist/${{ matrix.target }}/FFmpeg-LGPL-2.1.txt
+                  cp third_party/dav1d/COPYING dist/${{ matrix.target }}/Dav1d-BSD-2-Clause.txt
 
                   tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
               shell: msys2 {0}
@@ -875,6 +938,14 @@ jobs:
               with:
                   fetch-depth: 0
 
+            - name: Checkout pinned dav1d corresponding source
+              uses: actions/checkout@v4
+              with:
+                  repository: videolan/dav1d
+                  ref: 54706fc6bc0cdecab7e9593974a4039cc038fca7
+                  path: third_party/dav1d
+                  persist-credentials: false
+
             - uses: actions/download-artifact@v4
               with:
                   pattern: ffmpeg-media-*
@@ -895,13 +966,40 @@ jobs:
                     --prefix="ffmpeg-media-source-${GITHUB_REF_NAME}/" \
                     --output="release-assets/ffmpeg-media-source-${GITHUB_REF_NAME}.tar.gz" \
                     HEAD
+                  git -C third_party/dav1d archive --format=tar.gz \
+                    --prefix="dav1d-1.5.4/" \
+                    --output="$PWD/release-assets/dav1d-1.5.4-source.tar.gz" \
+                    54706fc6bc0cdecab7e9593974a4039cc038fca7
+
+                  glibc_floor() {
+                    platform="$1"
+                    audit_dir="$RUNNER_TEMP/glibc-audit-$platform"
+                    mkdir -p "$audit_dir"
+                    tar -xzf "release-assets/ffmpeg-media-$platform.tar.gz" -C "$audit_dir"
+                    floor="$(find "$audit_dir/$platform" -type f -exec readelf --version-info {} + 2>/dev/null \
+                      | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -n 1)"
+                    if [ -z "$floor" ]; then
+                      echo "No GLIBC symbol-version requirement found for $platform" >&2
+                      exit 1
+                    fi
+                    printf '%s\n' "$floor"
+                  }
+
+                  ffmpeg_runtime_version="$(sh ffbuild/version.sh .)"
+                  linux_arm64_glibc_floor="$(glibc_floor linux-arm64)"
+                  linux_x86_64_glibc_floor="$(glibc_floor linux-x86_64)"
 
                   {
                     echo "release_tag=${GITHUB_REF_NAME}"
                     echo "source_commit=$(git rev-parse HEAD)"
                     echo "upstream_base=${upstream_base}"
+                    echo "ffmpeg_runtime_version=${ffmpeg_runtime_version}"
+                    echo "dav1d_version=1.5.4"
+                    echo "dav1d_commit=54706fc6bc0cdecab7e9593974a4039cc038fca7"
+                    echo "linux_arm64_glibc_floor=${linux_arm64_glibc_floor}"
+                    echo "linux_x86_64_glibc_floor=${linux_x86_64_glibc_floor}"
                     echo
-                    echo "The complete corresponding source is in the source archive."
+                    echo "The complete FFmpeg and statically linked dav1d corresponding sources are in the source archives."
                     echo "changes.diff records this fork's changes relative to upstream_base."
                     echo "The six-platform build definition is .github/workflows/build.yml."
                     echo "FFmpeg is configured without --enable-gpl and --enable-nonfree."

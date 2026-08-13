@@ -16,6 +16,26 @@ AVCODEC_MAJOR="$(ffmpeg_major LIBAVCODEC_VERSION_MAJOR libavcodec/version_major.
 
 echo "=== FFmpeg minimal media build (E-AC-3 + H.264 + AV1) ==="
 
+# dav1d is built separately as a pinned static library. Keeping it out of the
+# runtime file set avoids a seventh platform-specific loader dependency while
+# still providing an explicit SOFTWARE_ONLY AV1 backend.
+DAV1D_PREFIX="${DAV1D_PREFIX:-$SCRIPT_DIR/dav1d_install}"
+DAV1D_LICENSE_FILE="${DAV1D_LICENSE_FILE:-$SCRIPT_DIR/third_party/dav1d/COPYING}"
+DAV1D_PC="$DAV1D_PREFIX/lib/pkgconfig/dav1d.pc"
+if [ ! -s "$DAV1D_PC" ]; then
+    echo "ERROR: pinned static dav1d pkg-config file is missing: $DAV1D_PC" >&2
+    exit 1
+fi
+if [ ! -s "$DAV1D_LICENSE_FILE" ]; then
+    echo "ERROR: dav1d BSD-2-Clause license is missing: $DAV1D_LICENSE_FILE" >&2
+    exit 1
+fi
+export PKG_CONFIG_PATH="$DAV1D_PREFIX/lib/pkgconfig${PKG_CONFIG_PATH:+:$PKG_CONFIG_PATH}"
+if [ "$(pkg-config --modversion dav1d)" != "1.5.4" ]; then
+    echo "ERROR: expected dav1d 1.5.4, got $(pkg-config --modversion dav1d)" >&2
+    exit 1
+fi
+
 HWACCEL_CONFIG=()
 ENABLE_LINUX_VAAPI="${ENABLE_LINUX_VAAPI:-1}"
 case "$OSTYPE" in
@@ -57,6 +77,8 @@ esac
     --enable-decoder=eac3 \
     --enable-decoder=h264 \
     --enable-decoder=av1 \
+    --enable-decoder=libdav1d \
+    --enable-libdav1d \
     --enable-parser=ac3 \
     --enable-parser=h264 \
     --enable-parser=av1 \
@@ -83,8 +105,12 @@ esac
     --prefix="$INSTALL_DIR" \
     "${HWACCEL_CONFIG[@]}"
 
+grep -q '^#define CONFIG_AV1_DECODER 1$' config_components.h
+grep -q '^#define CONFIG_LIBDAV1D_DECODER 1$' config_components.h
+
 make -j"$(nproc 2>/dev/null || sysctl -n hw.logicalcpu 2>/dev/null || echo 4)"
 make install
+cp "$DAV1D_LICENSE_FILE" "$INSTALL_DIR/Dav1d-BSD-2-Clause.txt"
 
 if find "$INSTALL_DIR" -type f \( -iname '*swresample*' -o -iname '*swresample-*' \) | grep -q .; then
     echo "ERROR: libswresample was produced despite --disable-swresample" >&2
@@ -207,6 +233,10 @@ if [[ "$OSTYPE" == darwin* ]]; then
             exit 1
         fi
     done
+    if otool -L "$INSTALL_DIR/lib/$AVCODEC_DYLIB" | grep -qi 'dav1d'; then
+        echo "ERROR: libavcodec must contain static dav1d, not a dav1d dylib dependency" >&2
+        exit 1
+    fi
 
     cp -f "$INSTALL_DIR/lib/libeac3_jni.dylib" "$INSTALL_DIR/bin/libeac3_jni.dylib"
     cp -f "$INSTALL_DIR/lib/libvideo_jni.dylib" "$INSTALL_DIR/bin/libvideo_jni.dylib"
@@ -258,6 +288,18 @@ if [[ "$OSTYPE" == linux* ]]; then
     require_needed libvideo_jni.so "$AVCODEC_SO"
     require_needed libvideo_jni.so "$AVUTIL_SO"
     require_needed libvideo_jni.so "$SWSCALE_SO"
+    if readelf -d "$INSTALL_DIR/lib/$AVCODEC_SO" | grep -qi 'dav1d'; then
+        echo "ERROR: libavcodec must contain static dav1d, not a libdav1d DT_NEEDED entry" >&2
+        exit 1
+    fi
+fi
+
+if [[ "$OSTYPE" == msys* || "$OSTYPE" == cygwin* || "$OSTYPE" == win32 ]]; then
+    AVCODEC_DLL="$(find "$INSTALL_DIR/bin" -maxdepth 1 -type f -iname 'avcodec-*.dll' | head -n 1)"
+    if objdump -p "$AVCODEC_DLL" | grep -qi 'DLL Name:.*dav1d'; then
+        echo "ERROR: avcodec DLL must contain static dav1d, not import dav1d.dll" >&2
+        exit 1
+    fi
 fi
 
 # ── 4. 报告 ──
