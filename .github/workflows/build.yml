@@ -674,8 +674,13 @@ jobs:
                   # UPX removes the section headers that readelf uses for
                   # --version-info. Capture the verified ABI floor now and pass
                   # it to the release job as immutable build metadata.
-                  glibc_floor="$(find "$libdir" -type f -exec readelf --version-info {} + 2>/dev/null \
-                    | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -n 1)"
+                  glibc_version_info="${RUNNER_TEMP}/glibc-version-info-${{ matrix.target }}.txt"
+                  : > "$glibc_version_info"
+                  for lib in "$AVUTIL_SO" "$AVCODEC_SO" "$SWSCALE_SO" libeac3_jni.so libvideo_jni.so; do
+                    readelf --version-info "$libdir/$lib" >> "$glibc_version_info"
+                  done
+                  glibc_floor="$(grep -oE 'GLIBC_[0-9]+\.[0-9]+' "$glibc_version_info" \
+                    | sort -V | tail -n 1 || true)"
                   if ! [[ "$glibc_floor" =~ ^GLIBC_[0-9]+\.[0-9]+$ ]]; then
                     echo "::error::Unable to determine GLIBC symbol-version floor before UPX: $glibc_floor"
                     exit 1
