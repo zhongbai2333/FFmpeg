@@ -22,7 +22,7 @@ jobs:
                       target: windows-x86_64
                       upx: true
                       msystem: UCRT64
-                      pacboy: "toolchain:p nasm:p pkgconf:p"
+                      pacboy: "toolchain:p nasm:p pkgconf:p meson:p upx:p"
                       cc: gcc
                       runner_arch: X64
                       pe-machine: "0x8664"
@@ -32,7 +32,7 @@ jobs:
                       target: windows-arm64
                       upx: false
                       msystem: CLANGARM64
-                      pacboy: "toolchain:p pkgconf:p"
+                      pacboy: "toolchain:p pkgconf:p meson:p"
                       cc: clang
                       runner_arch: ARM64
                       pe-machine: "0xaa64"
@@ -79,7 +79,7 @@ jobs:
                           export MACOSX_DEPLOYMENT_TARGET=11.0
 
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
 
             - name: Verify native runner architecture (Unix)
               if: runner.os != 'Windows'
@@ -100,7 +100,7 @@ jobs:
               shell: pwsh
 
             - name: Checkout pinned dav1d 1.5.4
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
               with:
                   repository: videolan/dav1d
                   ref: 54706fc6bc0cdecab7e9593974a4039cc038fca7
@@ -108,16 +108,18 @@ jobs:
                   persist-credentials: false
 
             # ── JDK (for JNI headers) ──
-            - uses: actions/setup-java@v4
+            - uses: actions/setup-java@v5
               with:
                   distribution: "temurin"
                   java-version: "21"
 
-            - uses: actions/setup-python@v5
+            - uses: actions/setup-python@v7
+              if: runner.os != 'Windows'
               with:
                   python-version: "3.13"
 
-            - name: Install pinned Meson/Ninja
+            - name: Install pinned Meson/Ninja (Unix)
+              if: runner.os != 'Windows'
               run: python -m pip install --disable-pip-version-check meson==1.7.0 ninja==1.11.1.4
 
             - uses: msys2/setup-msys2@v2
@@ -137,6 +139,15 @@ jobs:
                   chmod +x "$RUNNER_TEMP/ci-shell/msys2"
                   echo "$RUNNER_TEMP/ci-shell" >> "$GITHUB_PATH"
               shell: bash
+
+            - name: Verify Meson/Ninja toolchain
+              run: |
+                  set -euo pipefail
+                  command -v meson
+                  command -v ninja
+                  meson --version
+                  ninja --version
+              shell: msys2 {0}
 
             # ── Install build tools ──
             - name: Install tools (Linux)
@@ -178,16 +189,13 @@ jobs:
               if: runner.os == 'macOS'
               run: brew install nasm
 
-            - name: Install tools (Windows)
+            - name: Verify UPX (Windows)
               if: matrix.target == 'windows-x86_64'
               run: |
-                  choco install upx -y --no-progress
-                  $chocoBin = 'C:\ProgramData\chocolatey\bin'
-                  if (Test-Path $chocoBin) {
-                    $chocoBin | Out-File -FilePath $env:GITHUB_PATH -Append
-                  }
-                  Get-Command upx.exe -ErrorAction Stop
-              shell: pwsh
+                  set -euo pipefail
+                  command -v upx
+                  upx --version | head -n 1
+              shell: msys2 {0}
 
             - name: Build pinned static dav1d
               run: |
@@ -954,12 +962,12 @@ jobs:
         runs-on: ubuntu-latest
         if: startsWith(github.ref, 'refs/tags/')
         steps:
-            - uses: actions/checkout@v4
+            - uses: actions/checkout@v7
               with:
                   fetch-depth: 0
 
             - name: Checkout pinned dav1d corresponding source
-              uses: actions/checkout@v4
+              uses: actions/checkout@v7
               with:
                   repository: videolan/dav1d
                   ref: 54706fc6bc0cdecab7e9593974a4039cc038fca7
