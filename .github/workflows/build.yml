@@ -206,12 +206,6 @@ jobs:
                   fi
                   export CC="${CC:-${{ matrix.cc }}}"
                   rm -rf dav1d-build dav1d-install
-                  if [ "${{ runner.os }}" = "Windows" ]; then
-                    # Keep the MSYS path in dav1d.pc. Native Meson otherwise
-                    # rewrites --prefix to a drive-letter path, which FFmpeg's
-                    # configure cannot reliably round-trip through pkg-config.
-                    export MSYS2_ARG_CONV_EXCL="--prefix="
-                  fi
                   meson setup dav1d-build third_party/dav1d \
                     --prefix="$PWD/dav1d-install" \
                     --libdir=lib \
@@ -224,10 +218,17 @@ jobs:
                     -Denable_docs=false
                   meson compile -C dav1d-build
                   meson install -C dav1d-build
-                  export PKG_CONFIG_PATH="$PWD/dav1d-install/lib/pkgconfig"
+                  DAV1D_PKGCONFIG="$PWD/dav1d-install/lib/pkgconfig"
+                  if [ "${{ runner.os }}" = "Windows" ]; then
+                    # Values restored from GITHUB_ENV do not pass through the
+                    # MSYS argument converter. Store a native mixed-style path
+                    # that pkgconf and the MinGW compiler both understand.
+                    DAV1D_PKGCONFIG="$(cygpath -m "$DAV1D_PKGCONFIG")"
+                  fi
+                  export PKG_CONFIG_PATH="$DAV1D_PKGCONFIG"
                   test "$(pkg-config --modversion dav1d)" = "1.5.4"
                   test -s third_party/dav1d/COPYING
-                  echo "PKG_CONFIG_PATH=$PWD/dav1d-install/lib/pkgconfig" >> "$GITHUB_ENV"
+                  echo "PKG_CONFIG_PATH=$DAV1D_PKGCONFIG" >> "$GITHUB_ENV"
                   echo "=== dav1d pkg-config metadata ==="
                   cat "$PKG_CONFIG_PATH/dav1d.pc"
                   pkg-config --cflags --libs --static dav1d
@@ -249,6 +250,11 @@ jobs:
                   if [ "${{ runner.os }}" = "macOS" ]; then
                     export MACOSX_DEPLOYMENT_TARGET=11.0
                   fi
+                  DAV1D_PKGCONFIG="$PWD/dav1d-install/lib/pkgconfig"
+                  if [ "${{ runner.os }}" = "Windows" ]; then
+                    DAV1D_PKGCONFIG="$(cygpath -m "$DAV1D_PKGCONFIG")"
+                  fi
+                  export PKG_CONFIG_PATH="$DAV1D_PKGCONFIG"
                   echo "=== Build toolchain ==="
                   echo "MSYSTEM=${MSYSTEM:-}"
                   TOOL_CC="${{ matrix.cc }}"
