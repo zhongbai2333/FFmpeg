@@ -206,6 +206,12 @@ jobs:
                   fi
                   export CC="${CC:-${{ matrix.cc }}}"
                   rm -rf dav1d-build dav1d-install
+                  if [ "${{ runner.os }}" = "Windows" ]; then
+                    # Keep the MSYS path in dav1d.pc. Native Meson otherwise
+                    # rewrites --prefix to a drive-letter path, which FFmpeg's
+                    # configure cannot reliably round-trip through pkg-config.
+                    export MSYS2_ARG_CONV_EXCL="--prefix="
+                  fi
                   meson setup dav1d-build third_party/dav1d \
                     --prefix="$PWD/dav1d-install" \
                     --libdir=lib \
@@ -218,9 +224,20 @@ jobs:
                     -Denable_docs=false
                   meson compile -C dav1d-build
                   meson install -C dav1d-build
-                  test "$(PKG_CONFIG_PATH="$PWD/dav1d-install/lib/pkgconfig" pkg-config --modversion dav1d)" = "1.5.4"
+                  export PKG_CONFIG_PATH="$PWD/dav1d-install/lib/pkgconfig"
+                  test "$(pkg-config --modversion dav1d)" = "1.5.4"
                   test -s third_party/dav1d/COPYING
                   echo "PKG_CONFIG_PATH=$PWD/dav1d-install/lib/pkgconfig" >> "$GITHUB_ENV"
+                  echo "=== dav1d pkg-config metadata ==="
+                  cat "$PKG_CONFIG_PATH/dav1d.pc"
+                  pkg-config --cflags --libs --static dav1d
+                  cat > "$RUNNER_TEMP/dav1d-link-check.c" <<'EOF'
+                  #include <dav1d/dav1d.h>
+                  int main(void) { return dav1d_version() == 0; }
+                  EOF
+                  "$CC" "$RUNNER_TEMP/dav1d-link-check.c" \
+                    $(pkg-config --cflags --libs --static dav1d) \
+                    -o "$RUNNER_TEMP/dav1d-link-check"
                   echo "=== Static dav1d archive ==="
                   find dav1d-install -type f -print
               shell: msys2 {0}
@@ -242,7 +259,7 @@ jobs:
                     echo "=== Windows target triple ==="
                     "$TOOL_CC" -dumpmachine || true
                   fi
-                  ./configure \
+                  if ! ./configure \
                     --disable-everything \
                     --enable-decoder=eac3 \
                     --enable-decoder=h264 \
@@ -270,7 +287,12 @@ jobs:
                     --enable-shared \
                     --pkg-config-flags=--static \
                     --prefix="$PWD/install" \
-                    ${{ matrix.extra-config }}
+                    ${{ matrix.extra-config }}; then
+                    echo "::group::ffbuild/config.log"
+                    tail -n 400 ffbuild/config.log || true
+                    echo "::endgroup::"
+                    exit 1
+                  fi
                   echo "=== Configured threading model ==="
                   grep -E 'THREADS|PTHREAD|W32THREAD' ffbuild/config.mak || true
                   echo "=== Configured asm/SIMD ==="
@@ -289,6 +311,15 @@ jobs:
                     grep -q '^#define CONFIG_AV1_VAAPI_HWACCEL 1$' config_components.h
                   fi
               shell: msys2 {0}
+
+            - name: Upload FFmpeg configure log
+              if: failure() && hashFiles('ffbuild/config.log') != ''
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ffmpeg-config-log-${{ matrix.target }}
+                  path: ffbuild/config.log
+                  if-no-files-found: ignore
+                  retention-days: 7
 
             # ── Force-remove pthread from MinGW toolchain (Windows only) ──
             - name: Strip pthread linkage (Windows)
