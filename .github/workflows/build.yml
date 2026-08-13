@@ -670,6 +670,18 @@ jobs:
                     echo "=== $lib key symbols ==="
                     objdump -T "$libdir/$lib" | grep -E 'av_version_info|av_frame_alloc|av_frame_free|avcodec_send_packet|avcodec_receive_frame|avcodec_flush_buffers|sws_scale|Java_com_' || true
                   done
+
+                  # UPX removes the section headers that readelf uses for
+                  # --version-info. Capture the verified ABI floor now and pass
+                  # it to the release job as immutable build metadata.
+                  glibc_floor="$(find "$libdir" -type f -exec readelf --version-info {} + 2>/dev/null \
+                    | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -n 1)"
+                  if ! [[ "$glibc_floor" =~ ^GLIBC_[0-9]+\.[0-9]+$ ]]; then
+                    echo "::error::Unable to determine GLIBC symbol-version floor before UPX: $glibc_floor"
+                    exit 1
+                  fi
+                  printf '%s\n' "$glibc_floor" > "glibc-floor-${{ matrix.target }}.txt"
+                  echo "Recorded ${{ matrix.target }} GLIBC floor: $glibc_floor"
               shell: bash
 
             # ── Bundle Windows runtime dependencies ──
@@ -993,6 +1005,15 @@ jobs:
                   name: ffmpeg-media-${{ matrix.target }}
                   path: ffmpeg-media-${{ matrix.target }}.tar.gz
 
+            - name: Upload Linux ABI metadata
+              if: runner.os == 'Linux'
+              uses: actions/upload-artifact@v4
+              with:
+                  name: ffmpeg-abi-${{ matrix.target }}
+                  path: glibc-floor-${{ matrix.target }}.txt
+                  if-no-files-found: error
+                  retention-days: 7
+
     # ── Create release on tag ──
     release:
         needs: build
@@ -1016,6 +1037,13 @@ jobs:
                   pattern: ffmpeg-media-*
                   path: artifacts
 
+            - name: Download Linux ABI metadata
+              uses: actions/download-artifact@v4
+              with:
+                  pattern: ffmpeg-abi-linux-*
+                  path: abi-artifacts
+                  merge-multiple: true
+
             - name: Prepare corresponding source materials
               run: |
                   set -euo pipefail
@@ -1036,23 +1064,24 @@ jobs:
                     --output="$PWD/release-assets/dav1d-1.5.4-source.tar.gz" \
                     54706fc6bc0cdecab7e9593974a4039cc038fca7
 
-                  glibc_floor() {
+                  read_glibc_floor() {
                     platform="$1"
-                    audit_dir="$RUNNER_TEMP/glibc-audit-$platform"
-                    mkdir -p "$audit_dir"
-                    tar -xzf "release-assets/ffmpeg-media-$platform.tar.gz" -C "$audit_dir"
-                    floor="$(find "$audit_dir/$platform" -type f -exec readelf --version-info {} + 2>/dev/null \
-                      | grep -oE 'GLIBC_[0-9]+\.[0-9]+' | sort -V | tail -n 1)"
-                    if [ -z "$floor" ]; then
-                      echo "No GLIBC symbol-version requirement found for $platform" >&2
+                    metadata="abi-artifacts/glibc-floor-$platform.txt"
+                    if [ ! -s "$metadata" ]; then
+                      echo "Missing GLIBC ABI metadata for $platform: $metadata" >&2
+                      exit 1
+                    fi
+                    floor="$(cat "$metadata")"
+                    if ! [[ "$floor" =~ ^GLIBC_[0-9]+\.[0-9]+$ ]]; then
+                      echo "Invalid GLIBC ABI metadata for $platform: $floor" >&2
                       exit 1
                     fi
                     printf '%s\n' "$floor"
                   }
 
                   ffmpeg_runtime_version="$(sh ffbuild/version.sh .)"
-                  linux_arm64_glibc_floor="$(glibc_floor linux-arm64)"
-                  linux_x86_64_glibc_floor="$(glibc_floor linux-x86_64)"
+                  linux_arm64_glibc_floor="$(read_glibc_floor linux-arm64)"
+                  linux_x86_64_glibc_floor="$(read_glibc_floor linux-x86_64)"
 
                   {
                     echo "release_tag=${GITHUB_REF_NAME}"
