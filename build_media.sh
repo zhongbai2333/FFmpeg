@@ -37,15 +37,18 @@ if [ "$(pkg-config --modversion dav1d)" != "1.5.4" ]; then
 fi
 
 HWACCEL_CONFIG=()
+TOOLCHAIN_CONFIG=()
 ENABLE_LINUX_VAAPI="${ENABLE_LINUX_VAAPI:-1}"
 case "$OSTYPE" in
     darwin*)
+        TOOLCHAIN_CONFIG+=(--enable-pthreads)
         HWACCEL_CONFIG+=(
             --enable-hwaccel=h264_videotoolbox
             --enable-hwaccel=av1_videotoolbox
         )
         ;;
     linux*)
+        TOOLCHAIN_CONFIG+=(--enable-pthreads)
         # Linux bundle enables VAAPI by default for GitHub Runner builds. Set
         # ENABLE_LINUX_VAAPI=0/false to force a CPU-only build if CI dependencies
         # are temporarily unavailable.
@@ -58,6 +61,11 @@ case "$OSTYPE" in
         fi
         ;;
     msys*|cygwin*|win32)
+        TOOLCHAIN_CONFIG+=(
+            --enable-w32threads
+            --disable-pthreads
+            --extra-ldflags="-static-libgcc -static-libstdc++"
+        )
         HWACCEL_CONFIG+=(
             --enable-d3d11va
             --enable-dxva2
@@ -98,11 +106,9 @@ esac
     --enable-small \
     --disable-debug \
     --enable-shared \
-    --enable-w32threads \
-    --disable-pthreads \
-    --extra-ldflags="-static-libgcc -static-libstdc++" \
     --pkg-config-flags="--static" \
     --prefix="$INSTALL_DIR" \
+    "${TOOLCHAIN_CONFIG[@]}" \
     "${HWACCEL_CONFIG[@]}"
 
 grep -q '^#define CONFIG_AV1_DECODER 1$' config_components.h
@@ -135,22 +141,26 @@ case "$OSTYPE" in
 esac
 
 LIBS="-L${INSTALL_DIR}/lib -L${INSTALL_DIR}/bin -lavcodec -lavutil"
-EXTRA_FLAGS="-static-libgcc"
+CC_BIN="${CC:-gcc}"
+EXTRA_FLAGS=()
+case "$OSTYPE" in
+    msys*|cygwin*|win32) EXTRA_FLAGS+=( -static-libgcc ) ;;
+esac
 
 case "$OSTYPE" in
     darwin*)
-        gcc -shared -o "$INSTALL_DIR/bin/libeac3_jni.dylib" "$SCRIPT_DIR/eac3_jni.c" \
-            $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS $EXTRA_FLAGS
+        "$CC_BIN" -shared -o "$INSTALL_DIR/bin/libeac3_jni.dylib" "$SCRIPT_DIR/eac3_jni.c" \
+            $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS "${EXTRA_FLAGS[@]}"
         ;;
     linux*)
-        gcc -shared -o "$INSTALL_DIR/lib/libeac3_jni.so" "$SCRIPT_DIR/eac3_jni.c" \
+        "$CC_BIN" -shared -o "$INSTALL_DIR/lib/libeac3_jni.so" "$SCRIPT_DIR/eac3_jni.c" \
             $JNI_INCLUDES -I"$INSTALL_DIR/include" \
-            -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' $LIBS $EXTRA_FLAGS
+            -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' $LIBS "${EXTRA_FLAGS[@]}"
         ;;
     msys*|cygwin*|win32)
-        gcc -shared -o "$INSTALL_DIR/bin/eac3_jni.dll" "$SCRIPT_DIR/eac3_jni.c" \
+        "$CC_BIN" -shared -o "$INSTALL_DIR/bin/eac3_jni.dll" "$SCRIPT_DIR/eac3_jni.c" \
             $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS \
-            -Wl,--out-implib,libeac3_jni.dll.a $EXTRA_FLAGS
+            -Wl,--out-implib,libeac3_jni.dll.a "${EXTRA_FLAGS[@]}"
         ;;
 esac
 
@@ -160,18 +170,18 @@ LIBS_VIDEO="$LIBS -lswscale"
 
 case "$OSTYPE" in
     darwin*)
-        gcc -shared -o "$INSTALL_DIR/bin/libvideo_jni.dylib" "$SCRIPT_DIR/video_jni.c" \
-            $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS_VIDEO $EXTRA_FLAGS
+        "$CC_BIN" -shared -o "$INSTALL_DIR/bin/libvideo_jni.dylib" "$SCRIPT_DIR/video_jni.c" \
+            $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS_VIDEO "${EXTRA_FLAGS[@]}"
         ;;
     linux*)
-        gcc -shared -o "$INSTALL_DIR/lib/libvideo_jni.so" "$SCRIPT_DIR/video_jni.c" \
+        "$CC_BIN" -shared -o "$INSTALL_DIR/lib/libvideo_jni.so" "$SCRIPT_DIR/video_jni.c" \
             $JNI_INCLUDES -I"$INSTALL_DIR/include" \
-            -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' $LIBS_VIDEO $EXTRA_FLAGS
+            -Wl,--no-undefined -Wl,-rpath,'$ORIGIN' $LIBS_VIDEO "${EXTRA_FLAGS[@]}"
         ;;
     msys*|cygwin*|win32)
-        gcc -shared -o "$INSTALL_DIR/bin/video_jni.dll" "$SCRIPT_DIR/video_jni.c" \
+        "$CC_BIN" -shared -o "$INSTALL_DIR/bin/video_jni.dll" "$SCRIPT_DIR/video_jni.c" \
             $JNI_INCLUDES -I"$INSTALL_DIR/include" $LIBS_VIDEO \
-            -Wl,--out-implib,libvideo_jni.dll.a $EXTRA_FLAGS
+            -Wl,--out-implib,libvideo_jni.dll.a "${EXTRA_FLAGS[@]}"
         ;;
 esac
 
@@ -307,7 +317,6 @@ echo ""
 echo "=== Build complete ==="
 case "$OSTYPE" in
     darwin*)
-        LIB_DIR="$INSTALL_DIR/bin"
         LIB_DIR="$INSTALL_DIR/bin"
         LIBS_LIST=("libavutil.${AVUTIL_MAJOR}" "libswscale.${SWSCALE_MAJOR}" "libavcodec.${AVCODEC_MAJOR}" "libeac3_jni" "libvideo_jni")
         EXT=".dylib"

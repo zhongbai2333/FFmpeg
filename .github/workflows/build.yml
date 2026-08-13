@@ -24,6 +24,7 @@ jobs:
                       msystem: UCRT64
                       pacboy: "toolchain:p nasm:p pkgconf:p"
                       cc: gcc
+                      runner_arch: X64
                       pe-machine: "0x8664"
                       extra-config: "--enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=av1_d3d11va --enable-hwaccel=av1_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=av1_dxva2 --extra-ldflags='-static-libgcc -static-libstdc++' --pkg-config-flags='--static'"
 
@@ -33,6 +34,7 @@ jobs:
                       msystem: CLANGARM64
                       pacboy: "toolchain:p pkgconf:p"
                       cc: clang
+                      runner_arch: ARM64
                       pe-machine: "0xaa64"
                       extra-config: "--arch=aarch64 --target-os=mingw32 --cc=clang --cxx=clang++ --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip --extra-cflags='--target=aarch64-w64-windows-gnu' --extra-ldflags='--target=aarch64-w64-windows-gnu' --disable-x86asm --enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=av1_d3d11va --enable-hwaccel=av1_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=av1_dxva2 --pkg-config-flags='--static'"
 
@@ -41,43 +43,61 @@ jobs:
                       target: linux-x86_64
                       upx: true
                       cc: gcc
+                      runner_arch: X64
                       extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=av1_vaapi"
 
                     - os: ubuntu-24.04-arm
                       target: linux-arm64
                       upx: true
                       cc: gcc
+                      runner_arch: ARM64
                       extra-config: "--enable-vaapi --enable-hwaccel=h264_vaapi --enable-hwaccel=av1_vaapi"
 
                     # ── macOS (不要 UPX —— 会破坏代码签名) ──
                     - os: macos-15-intel
                       target: macos-x86_64
                       upx: false
-                      cc: gcc
+                      cc: clang
+                      runner_arch: X64
                       macho-arch: x86_64
-                      extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=av1_videotoolbox --extra-cflags='-arch x86_64 -mmacosx-version-min=11.0' --extra-ldflags='-arch x86_64 -mmacosx-version-min=11.0'"
+                      extra-config: "--arch=x86_64 --cc=clang --cxx=clang++ --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=av1_videotoolbox --extra-cflags='-mmacosx-version-min=11.0' --extra-ldflags='-mmacosx-version-min=11.0'"
                       pre-configure: |
-                          export CC="clang -arch x86_64"
-                          export CXX="clang++ -arch x86_64"
-                          export CFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
-                          export LDFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
+                          export CC="clang"
+                          export CXX="clang++"
                           export MACOSX_DEPLOYMENT_TARGET=11.0
 
                     - os: macos-15
                       target: macos-arm64
                       upx: false
-                      cc: gcc
+                      cc: clang
+                      runner_arch: ARM64
                       macho-arch: arm64
-                      extra-config: "--arch=arm64 --target-os=darwin --enable-cross-compile --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=av1_videotoolbox --extra-cflags='-arch arm64 -mmacosx-version-min=11.0' --extra-ldflags='-arch arm64 -mmacosx-version-min=11.0'"
+                      extra-config: "--arch=arm64 --cc=clang --cxx=clang++ --disable-xlib --enable-hwaccel=h264_videotoolbox --enable-hwaccel=av1_videotoolbox --extra-cflags='-mmacosx-version-min=11.0' --extra-ldflags='-mmacosx-version-min=11.0'"
                       pre-configure: |
-                          export CC="clang -arch arm64"
-                          export CXX="clang++ -arch arm64"
-                          export CFLAGS="-arch arm64 -mmacosx-version-min=11.0"
-                          export LDFLAGS="-arch arm64 -mmacosx-version-min=11.0"
+                          export CC="clang"
+                          export CXX="clang++"
                           export MACOSX_DEPLOYMENT_TARGET=11.0
 
         steps:
             - uses: actions/checkout@v4
+
+            - name: Verify native runner architecture (Unix)
+              if: runner.os != 'Windows'
+              run: |
+                  set -euo pipefail
+                  if [ "${{ runner.arch }}" != "${{ matrix.runner_arch }}" ]; then
+                    echo "::error::Runner architecture mismatch for ${{ matrix.target }}: expected ${{ matrix.runner_arch }}, got ${{ runner.arch }}"
+                    exit 1
+                  fi
+              shell: bash
+
+            - name: Verify native runner architecture (Windows)
+              if: runner.os == 'Windows'
+              run: |
+                  if ("${{ runner.arch }}" -ne "${{ matrix.runner_arch }}") {
+                    throw "Runner architecture mismatch for ${{ matrix.target }}: expected ${{ matrix.runner_arch }}, got ${{ runner.arch }}"
+                  }
+              shell: pwsh
 
             - name: Checkout pinned dav1d 1.5.4
               uses: actions/checkout@v4

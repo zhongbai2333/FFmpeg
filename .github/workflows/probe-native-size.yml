@@ -32,25 +32,25 @@ jobs:
         include:
           - target: windows-x86_64
             os: windows-latest
+            runner_arch: X64
             extra-config: "--enable-w32threads --disable-pthreads --extra-ldflags=-static-libgcc"
             shell: msys2 {0}
           - target: linux-x86_64
             os: ubuntu-latest
+            runner_arch: X64
             extra-config: ""
             shell: bash
           - target: macos-arm64
             os: macos-15
-            extra-config: ""
+            runner_arch: ARM64
+            extra-config: "--arch=arm64 --cc=clang --cxx=clang++ --extra-cflags='-mmacosx-version-min=11.0' --extra-ldflags='-mmacosx-version-min=11.0'"
+            pre-configure: export MACOSX_DEPLOYMENT_TARGET=11.0
             shell: bash
           - target: macos-x86_64
             os: macos-15-intel
-            extra-config: "--arch=x86_64 --target-os=darwin --enable-cross-compile"
-            pre-configure: |
-              export CC="clang -arch x86_64"
-              export CXX="clang++ -arch x86_64"
-              export CFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
-              export LDFLAGS="-arch x86_64 -mmacosx-version-min=11.0"
-              export MACOSX_DEPLOYMENT_TARGET=11.0
+            runner_arch: X64
+            extra-config: "--arch=x86_64 --cc=clang --cxx=clang++ --extra-cflags='-mmacosx-version-min=11.0' --extra-ldflags='-mmacosx-version-min=11.0'"
+            pre-configure: export MACOSX_DEPLOYMENT_TARGET=11.0
             shell: bash
 
     defaults:
@@ -90,6 +90,14 @@ jobs:
             mingw-w64-ucrt-x86_64-nasm
             mingw-w64-ucrt-x86_64-pkgconf
             mingw-w64-ucrt-x86_64-upx
+
+      - name: Verify native runner architecture
+        run: |
+          set -euo pipefail
+          if [ "${{ runner.arch }}" != "${{ matrix.runner_arch }}" ]; then
+            echo "::error::Runner architecture mismatch for ${{ matrix.target }}: expected ${{ matrix.runner_arch }}, got ${{ runner.arch }}"
+            exit 1
+          fi
 
       - name: Select variants
         id: variants
