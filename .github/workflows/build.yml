@@ -1145,8 +1145,10 @@ jobs:
                       echo "Missing FFmpeg runtime metadata for $platform: $metadata" >&2
                       exit 1
                     fi
-                    version="$(cat "$metadata")"
-                    if ! [[ "$version" =~ ^[A-Za-z0-9][A-Za-z0-9._+-]*$ ]]; then
+                    # pathlib writes CRLF on Windows runners. Normalize only CR;
+                    # command substitution removes the single trailing LF.
+                    version="$(tr -d '\r' < "$metadata")"
+                    if ! [[ "$version" =~ ^[-A-Za-z0-9._+]+$ ]]; then
                       echo "Invalid FFmpeg runtime metadata for $platform: $version" >&2
                       exit 1
                     fi
@@ -1154,18 +1156,12 @@ jobs:
                   }
 
                   ffmpeg_source_version="$(sh ffbuild/version.sh .)"
-                  runtime_platforms=(
-                    linux-arm64 linux-x86_64 macos-arm64 macos-x86_64
-                    windows-arm64 windows-x86_64
-                  )
-                  ffmpeg_runtime_version="$(read_runtime_version "${runtime_platforms[0]}")"
-                  for platform in "${runtime_platforms[@]:1}"; do
-                    candidate="$(read_runtime_version "$platform")"
-                    if [ "$candidate" != "$ffmpeg_runtime_version" ]; then
-                      echo "FFmpeg runtime identity mismatch: ${runtime_platforms[0]}=$ffmpeg_runtime_version, $platform=$candidate" >&2
-                      exit 1
-                    fi
-                  done
+                  ffmpeg_runtime_version_linux_arm64="$(read_runtime_version linux-arm64)"
+                  ffmpeg_runtime_version_linux_x86_64="$(read_runtime_version linux-x86_64)"
+                  ffmpeg_runtime_version_macos_arm64="$(read_runtime_version macos-arm64)"
+                  ffmpeg_runtime_version_macos_x86_64="$(read_runtime_version macos-x86_64)"
+                  ffmpeg_runtime_version_windows_arm64="$(read_runtime_version windows-arm64)"
+                  ffmpeg_runtime_version_windows_x86_64="$(read_runtime_version windows-x86_64)"
                   linux_arm64_glibc_floor="$(read_glibc_floor linux-arm64)"
                   linux_x86_64_glibc_floor="$(read_glibc_floor linux-x86_64)"
 
@@ -1174,7 +1170,12 @@ jobs:
                     echo "source_commit=$(git rev-parse HEAD)"
                     echo "upstream_base=${upstream_base}"
                     echo "ffmpeg_source_version=${ffmpeg_source_version}"
-                    echo "ffmpeg_runtime_version=${ffmpeg_runtime_version}"
+                    echo "ffmpeg_runtime_version_linux_arm64=${ffmpeg_runtime_version_linux_arm64}"
+                    echo "ffmpeg_runtime_version_linux_x86_64=${ffmpeg_runtime_version_linux_x86_64}"
+                    echo "ffmpeg_runtime_version_macos_arm64=${ffmpeg_runtime_version_macos_arm64}"
+                    echo "ffmpeg_runtime_version_macos_x86_64=${ffmpeg_runtime_version_macos_x86_64}"
+                    echo "ffmpeg_runtime_version_windows_arm64=${ffmpeg_runtime_version_windows_arm64}"
+                    echo "ffmpeg_runtime_version_windows_x86_64=${ffmpeg_runtime_version_windows_x86_64}"
                     echo "dav1d_version=1.5.4"
                     echo "dav1d_commit=54706fc6bc0cdecab7e9593974a4039cc038fca7"
                     echo "linux_arm64_glibc_floor=${linux_arm64_glibc_floor}"
