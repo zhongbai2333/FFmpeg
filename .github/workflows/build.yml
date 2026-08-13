@@ -22,7 +22,7 @@ jobs:
                       target: windows-x86_64
                       upx: true
                       msystem: UCRT64
-                      pacboy: "toolchain:p nasm:p pkgconf:p meson:p upx:p"
+                      pacboy: "toolchain:p nasm:p pkgconf:p upx:p"
                       cc: gcc
                       runner_arch: X64
                       pe-machine: "0x8664"
@@ -32,7 +32,7 @@ jobs:
                       target: windows-arm64
                       upx: false
                       msystem: CLANGARM64
-                      pacboy: "toolchain:p pkgconf:p meson:p"
+                      pacboy: "toolchain:p pkgconf:p"
                       cc: clang
                       runner_arch: ARM64
                       pe-machine: "0xaa64"
@@ -99,14 +99,6 @@ jobs:
                   }
               shell: pwsh
 
-            - name: Checkout pinned dav1d 1.5.4
-              uses: actions/checkout@v7
-              with:
-                  repository: videolan/dav1d
-                  ref: 54706fc6bc0cdecab7e9593974a4039cc038fca7
-                  path: third_party/dav1d
-                  persist-credentials: false
-
             # ── JDK (for JNI headers) ──
             - uses: actions/setup-java@v5
               with:
@@ -117,10 +109,6 @@ jobs:
               if: runner.os != 'Windows'
               with:
                   python-version: "3.13"
-
-            - name: Install pinned Meson/Ninja (Unix)
-              if: runner.os != 'Windows'
-              run: python -m pip install --disable-pip-version-check meson==1.7.0 ninja==1.11.1.4
 
             - uses: msys2/setup-msys2@v2
               if: runner.os == 'Windows'
@@ -139,15 +127,6 @@ jobs:
                   chmod +x "$RUNNER_TEMP/ci-shell/msys2"
                   echo "$RUNNER_TEMP/ci-shell" >> "$GITHUB_PATH"
               shell: bash
-
-            - name: Verify Meson/Ninja toolchain
-              run: |
-                  set -euo pipefail
-                  command -v meson
-                  command -v ninja
-                  meson --version
-                  ninja --version
-              shell: msys2 {0}
 
             # ── Install build tools ──
             - name: Install tools (Linux)
@@ -197,52 +176,6 @@ jobs:
                   upx --version | head -n 1
               shell: msys2 {0}
 
-            - name: Build pinned static dav1d
-              run: |
-                  set -euo pipefail
-                  ${{ matrix.pre-configure }}
-                  if [ "${{ runner.os }}" = "macOS" ]; then
-                    export MACOSX_DEPLOYMENT_TARGET=11.0
-                  fi
-                  export CC="${CC:-${{ matrix.cc }}}"
-                  rm -rf dav1d-build dav1d-install
-                  meson setup dav1d-build third_party/dav1d \
-                    --prefix="$PWD/dav1d-install" \
-                    --libdir=lib \
-                    --default-library=static \
-                    --buildtype=release \
-                    -Db_staticpic=true \
-                    -Denable_tools=false \
-                    -Denable_examples=false \
-                    -Denable_tests=false \
-                    -Denable_docs=false
-                  meson compile -C dav1d-build
-                  meson install -C dav1d-build
-                  DAV1D_PKGCONFIG="$PWD/dav1d-install/lib/pkgconfig"
-                  if [ "${{ runner.os }}" = "Windows" ]; then
-                    # Values restored from GITHUB_ENV do not pass through the
-                    # MSYS argument converter. Store a native mixed-style path
-                    # that pkgconf and the MinGW compiler both understand.
-                    DAV1D_PKGCONFIG="$(cygpath -m "$DAV1D_PKGCONFIG")"
-                  fi
-                  export PKG_CONFIG_PATH="$DAV1D_PKGCONFIG"
-                  test "$(pkg-config --modversion dav1d)" = "1.5.4"
-                  test -s third_party/dav1d/COPYING
-                  echo "PKG_CONFIG_PATH=$DAV1D_PKGCONFIG" >> "$GITHUB_ENV"
-                  echo "=== dav1d pkg-config metadata ==="
-                  cat "$PKG_CONFIG_PATH/dav1d.pc"
-                  pkg-config --cflags --libs --static dav1d
-                  cat > "$RUNNER_TEMP/dav1d-link-check.c" <<'EOF'
-                  #include <dav1d/dav1d.h>
-                  int main(void) { return dav1d_version() == 0; }
-                  EOF
-                  "$CC" "$RUNNER_TEMP/dav1d-link-check.c" \
-                    $(pkg-config --cflags --libs --static dav1d) \
-                    -o "$RUNNER_TEMP/dav1d-link-check"
-                  echo "=== Static dav1d archive ==="
-                  find dav1d-install -type f -print
-              shell: msys2 {0}
-
             # ── Configure ──
             - name: Configure FFmpeg
               run: |
@@ -250,11 +183,6 @@ jobs:
                   if [ "${{ runner.os }}" = "macOS" ]; then
                     export MACOSX_DEPLOYMENT_TARGET=11.0
                   fi
-                  DAV1D_PKGCONFIG="$PWD/dav1d-install/lib/pkgconfig"
-                  if [ "${{ runner.os }}" = "Windows" ]; then
-                    DAV1D_PKGCONFIG="$(cygpath -m "$DAV1D_PKGCONFIG")"
-                  fi
-                  export PKG_CONFIG_PATH="$DAV1D_PKGCONFIG"
                   echo "=== Build toolchain ==="
                   echo "MSYSTEM=${MSYSTEM:-}"
                   TOOL_CC="${{ matrix.cc }}"
@@ -270,13 +198,12 @@ jobs:
                     --enable-decoder=eac3 \
                     --enable-decoder=h264 \
                     --enable-decoder=av1 \
-                    --enable-decoder=libdav1d \
-                    --enable-libdav1d \
                     --enable-parser=ac3 \
                     --enable-parser=h264 \
                     --enable-parser=av1 \
                     --enable-bsf=h264_mp4toannexb \
                     --enable-swscale \
+                    --disable-iconv \
                     --disable-swresample \
                     --disable-programs \
                     --disable-doc \
@@ -306,7 +233,8 @@ jobs:
                   echo "=== Enabled decoders/parsers/bsfs/hwaccels ==="
                   grep -E 'CONFIG_(EAC3|H264|AV1|LIBDAV1D|HEVC|ITUT_T35|AC3|H264_MP4TOANNEXB|HEVC_MP4TOANNEXB|SWSCALE|H264_D3D11VA|H264_D3D11VA2|AV1_D3D11VA|AV1_D3D11VA2|H264_DXVA2|AV1_DXVA2|H264_VAAPI|AV1_VAAPI|H264_VIDEOTOOLBOX|AV1_VIDEOTOOLBOX)' config.h || true
                   grep -q '^#define CONFIG_AV1_DECODER 1$' config_components.h
-                  grep -q '^#define CONFIG_LIBDAV1D_DECODER 1$' config_components.h
+                  grep -q '^#define CONFIG_LIBDAV1D_DECODER 0$' config_components.h
+                  grep -q '^#define HAVE_ICONV 0$' config.h
                   grep -q '^#define CONFIG_H264_DECODER 1$' config_components.h
                   grep -q '^#define CONFIG_HEVC_DECODER 0$' config_components.h
                   grep -q '^#define CONFIG_HEVC_PARSER 0$' config_components.h
@@ -548,10 +476,6 @@ jobs:
                       exit 1
                     fi
                   done
-                  if otool -L "$libdir/$AVCODEC_DYLIB" | grep -qi 'dav1d'; then
-                    echo "::error::libavcodec must statically contain dav1d, not depend on a dav1d dylib"
-                    exit 1
-                  fi
               shell: bash
 
             - name: Audit macOS dylib runtime loading
@@ -659,10 +583,6 @@ jobs:
                   require_needed libvideo_jni.so "$AVUTIL_SO"
                   require_needed libvideo_jni.so "$SWSCALE_SO"
 
-                  if readelf -d "$libdir/$AVCODEC_SO" | grep -qi 'dav1d'; then
-                    echo "::error::libavcodec must statically contain dav1d, not have a libdav1d DT_NEEDED entry"
-                    exit 1
-                  fi
 
                   for lib in "$AVUTIL_SO" "$AVCODEC_SO" "$SWSCALE_SO" libeac3_jni.so libvideo_jni.so; do
                     echo "=== $lib dynamic section ==="
@@ -718,7 +638,7 @@ jobs:
                     return 1
                   }
 
-                  for runtime in libwinpthread-1.dll libiconv-2.dll; do
+                  for runtime in libwinpthread-1.dll; do
                     dep="$(find_dll "$runtime" || true)"
                     if [ -n "$dep" ]; then
                       cp "$dep" "install/bin/$runtime"
@@ -786,7 +706,6 @@ jobs:
                       "libstdc++-6.dll",
                   }
                   BUNDLED = {
-                      "libiconv-2.dll",
                       "libwinpthread-1.dll",
                   }
                   EXPECTED_PE_MACHINE = int(os.environ["EXPECTED_PE_MACHINE"], 0)
@@ -908,7 +827,7 @@ jobs:
                   "$UPX_BIN" --version | head -n 1
                   find install -type f \( -name "*.dll" -o -name "*.so*" \) | while read f; do
                     case "$(basename "$f")" in
-                      libiconv-2.dll|libwinpthread-1.dll)
+                      libwinpthread-1.dll)
                         echo "Skipping runtime DLL: $f"
                         continue
                         ;;
@@ -1037,7 +956,6 @@ jobs:
                   # Keep the license next to every independently downloadable
                   # native bundle, not only in the consuming mod JAR.
                   cp COPYING.LGPLv2.1 dist/${{ matrix.target }}/FFmpeg-LGPL-2.1.txt
-                  cp third_party/dav1d/COPYING dist/${{ matrix.target }}/Dav1d-BSD-2-Clause.txt
 
                   tar czf ffmpeg-media-${{ matrix.target }}.tar.gz -C dist ${{ matrix.target }}
               shell: msys2 {0}
@@ -1076,14 +994,6 @@ jobs:
               with:
                   fetch-depth: 0
 
-            - name: Checkout pinned dav1d corresponding source
-              uses: actions/checkout@v7
-              with:
-                  repository: videolan/dav1d
-                  ref: 54706fc6bc0cdecab7e9593974a4039cc038fca7
-                  path: third_party/dav1d
-                  persist-credentials: false
-
             - uses: actions/download-artifact@v4
               with:
                   pattern: ffmpeg-media-*
@@ -1118,11 +1028,6 @@ jobs:
                     --prefix="ffmpeg-media-source-${GITHUB_REF_NAME}/" \
                     --output="release-assets/ffmpeg-media-source-${GITHUB_REF_NAME}.tar.gz" \
                     HEAD
-                  git -C third_party/dav1d archive --format=tar.gz \
-                    --prefix="dav1d-1.5.4/" \
-                    --output="$PWD/release-assets/dav1d-1.5.4-source.tar.gz" \
-                    54706fc6bc0cdecab7e9593974a4039cc038fca7
-
                   read_glibc_floor() {
                     platform="$1"
                     metadata="abi-artifacts/glibc-floor-$platform.txt"
@@ -1176,12 +1081,10 @@ jobs:
                     echo "ffmpeg_runtime_version_macos_x86_64=${ffmpeg_runtime_version_macos_x86_64}"
                     echo "ffmpeg_runtime_version_windows_arm64=${ffmpeg_runtime_version_windows_arm64}"
                     echo "ffmpeg_runtime_version_windows_x86_64=${ffmpeg_runtime_version_windows_x86_64}"
-                    echo "dav1d_version=1.5.4"
-                    echo "dav1d_commit=54706fc6bc0cdecab7e9593974a4039cc038fca7"
                     echo "linux_arm64_glibc_floor=${linux_arm64_glibc_floor}"
                     echo "linux_x86_64_glibc_floor=${linux_x86_64_glibc_floor}"
                     echo
-                    echo "The complete FFmpeg and statically linked dav1d corresponding sources are in the source archives."
+                    echo "The complete FFmpeg corresponding source is in the source archive."
                     echo "changes.diff records this fork's changes relative to upstream_base."
                     echo "The six-platform build definition is .github/workflows/build.yml."
                     echo "FFmpeg is configured without --enable-gpl and --enable-nonfree."

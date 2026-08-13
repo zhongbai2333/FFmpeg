@@ -310,18 +310,22 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
         return 0;
     }
 
-    int software_av1_requested = av_codec_id == AV_CODEC_ID_AV1
+    int av1_without_hardware = av_codec_id == AV_CODEC_ID_AV1
         && (!hwaccel_name || !hwaccel_name[0]
             || strcmp(hwaccel_name, "none") == 0
             || strcmp(hwaccel_name, "off") == 0);
+    if (av1_without_hardware)
+    {
+        throwException(env, "AV1 仅支持硬件解码；请回退到 H.264");
+        return 0;
+    }
     const AVCodec *codec;
     if (av_codec_id == AV_CODEC_ID_AV1)
     {
-        /* Keep hardware AV1 on FFmpeg's native decoder. libdav1d exposes no
-         * AVHWDevice configs, so choosing only by codec id would make decoder
-         * selection depend on registration order and silently break strict
-         * hardware requests. */
-        codec = avcodec_find_decoder_by_name(software_av1_requested ? "libdav1d" : "av1");
+        /* AV1 is deliberately hardware-only in this bundle. The native FFmpeg
+         * decoder exposes the AVHWDevice configs required by strict platform
+         * backends; Java rejects any actual CPU fallback before playback. */
+        codec = avcodec_find_decoder_by_name("av1");
     }
     else
     {
@@ -329,12 +333,9 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     }
     if (!codec)
     {
-        if (software_av1_requested)
-            throwException(env, "FFmpeg 未包含 libdav1d 软件 AV1 解码器");
-        else
-            throwException(env, av_codec_id == AV_CODEC_ID_AV1
-                        ? "FFmpeg 未包含原生 AV1 硬件解码器"
-                        : "FFmpeg 未包含 H.264 解码器");
+        throwException(env, av_codec_id == AV_CODEC_ID_AV1
+                    ? "FFmpeg 未包含原生 AV1 硬件解码器"
+                    : "FFmpeg 未包含 H.264 解码器");
         return 0;
     }
 
@@ -365,8 +366,7 @@ static jlong decoderOpenForCodec(JNIEnv *env, jint codec_id, jint target_width, 
     h->hw_device_type = AV_HWDEVICE_TYPE_NONE;
     h->yuv_sws_dst_format = AV_PIX_FMT_NONE;
     h->last_frame_pts_nanos = AV_NOPTS_VALUE;
-    snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s",
-             software_av1_requested ? "cpu(libdav1d)" : "cpu");
+    snprintf(h->hwaccel_name, sizeof(h->hwaccel_name), "%s", "cpu");
 
     if (!h->packet || !h->decode_frame || !h->transfer_frame || !h->rgb_frame || !h->yuv_frame)
     {
