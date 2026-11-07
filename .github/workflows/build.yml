@@ -39,7 +39,8 @@ jobs:
                       extra-config: "--arch=aarch64 --target-os=mingw32 --cc=clang --cxx=clang++ --ar=llvm-ar --nm=llvm-nm --ranlib=llvm-ranlib --strip=llvm-strip --extra-cflags='--target=aarch64-w64-windows-gnu' --extra-ldflags='--target=aarch64-w64-windows-gnu' --disable-x86asm --enable-w32threads --disable-pthreads --enable-hwaccel=h264_d3d11va --enable-hwaccel=h264_d3d11va2 --enable-hwaccel=av1_d3d11va --enable-hwaccel=av1_d3d11va2 --enable-hwaccel=h264_dxva2 --enable-hwaccel=av1_dxva2 --pkg-config-flags='--static'"
 
                     # ── Linux ──
-                    - os: ubuntu-latest
+                    # Keep x86_64 on the same Ubuntu LTS baseline as arm64.
+                    - os: ubuntu-24.04
                       target: linux-x86_64
                       upx: true
                       cc: gcc
