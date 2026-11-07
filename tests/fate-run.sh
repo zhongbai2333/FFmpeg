@@ -26,6 +26,7 @@ gen=${16:-no}
 hwaccel=${17:-none}
 report_type=${18:-standard}
 keep=${19:-0}
+test "$keep" -ge 1 || cleanfiles=${20}
 
 outdir="tests/data/fate"
 outfile="${outdir}/${test}"
@@ -253,7 +254,7 @@ enc_dec_pcm(){
     src_file=$(target_path $4)
     shift 4
     encfile="${outdir}/${test}.${out_fmt}"
-    cleanfiles=$encfile
+    cleanfiles="$cleanfiles $encfile"
     encfile=$(target_path ${encfile})
     ffmpeg -auto_conversion_filters -i $src_file "$@" -f $out_fmt -y ${encfile} || return
     ffmpeg -auto_conversion_filters -bitexact -i ${encfile} -c:a pcm_${pcm_fmt} -fflags +bitexact -f ${dec_fmt} -
@@ -319,7 +320,12 @@ transcode(){
     test -z "$final_encode_muxer" && final_encode_muxer="framecrc"
     encfile="${outdir}/${test}.${enc_fmt}"
     test $keep -ge 1 || cleanfiles="$cleanfiles $encfile"
-    tsrcfile=$(target_path $srcfile)
+    # lavfi graphs are not file paths, so do not run them through target_path.
+    if [ "$src_fmt" = "lavfi" ]; then
+        tsrcfile="$srcfile"
+    else
+        tsrcfile=$(target_path $srcfile)
+    fi
     tencfile=$(target_path $encfile)
     ffmpeg -f $src_fmt $DEC_OPTS $enc_opt_in -i $tsrcfile $additional_input \
            $ENC_OPTS $enc_opt $FLAGS -f $enc_fmt -y $tencfile || return
@@ -532,8 +538,9 @@ refcmp_metadata(){
     refcmp=$1
     pixfmt=$2
     fuzz=${3:-0.001}
+    filter=${4:-avgblur=4}
     ffmpeg -auto_conversion_filters $FLAGS $ENC_OPTS \
-        -lavfi "testsrc2=size=300x200:rate=1:duration=5,format=${pixfmt},split[ref][tmp];[tmp]avgblur=4[enc];[enc][ref]${refcmp},metadata=print:file=-" \
+        -lavfi "testsrc2=size=300x200:rate=1:duration=5,format=${pixfmt},split[ref][tmp];[tmp]${filter}[enc];[enc][ref]${refcmp},metadata=print:file=-" \
         -f null /dev/null | awk -v ref=${ref} -v fuzz=${fuzz} -f ${base}/refcmp-metadata.awk -
 }
 
@@ -719,7 +726,7 @@ concat(){
 
     concatfile="${outdir}/${test}.ffconcat"
     packetfile="${outdir}/${test}.ffprobe"
-    cleanfiles="$concatfile $packetfile"
+    cleanfiles="$cleanfiles $concatfile $packetfile"
 
     awk "{gsub(/%SRCFILE%/, \"$sample\"); print}" $template > $concatfile
 
@@ -729,6 +736,31 @@ concat(){
     else
         run ffprobe${PROGSUF}${EXECSUF} -bitexact -threads $threads -show_streams -show_packets -of compact=p=0:nk=1 -safe 0 $extra_args $(target_path $concatfile)
     fi
+}
+
+seek_concat(){
+    template=$1
+    sample=$2
+    shift 2
+
+    concatfile="${outdir}/${test}.ffconcat"
+    cleanfiles="$cleanfiles $concatfile"
+
+    awk "{gsub(/%SRCFILE%/, \"$sample\"); print}" $template > $concatfile
+    run libavformat/tests/seek${EXECSUF} $(target_path $concatfile) -safe 0 "$@"
+}
+
+seek_staggered(){
+    sample=$1
+    offset=$2
+    shift 2
+
+    file="${outdir}/${test}.mov"
+    cleanfiles="$cleanfiles $file"
+
+    ffmpeg -i $sample -itsoffset $offset -i $sample -map 0:a -map 1:a -c copy \
+        -fflags +bitexact -f mov -y $(target_path $file) || return
+    run libavformat/tests/seek${EXECSUF} $(target_path $file) "$@"
 }
 
 venc_data(){
@@ -757,6 +789,9 @@ null(){
 # Disable globbing: command arguments may contain globbing characters and
 # must be kept verbatim
 set -f
+
+# A pipeline fails when any of its commands fails, if the shell supports it
+(set -o pipefail) 2>/dev/null && set -o pipefail
 
 exec 3>&2
 eval $command >"$outfile" 2>$errfile
@@ -806,7 +841,8 @@ fi
 
 if test $err = 0; then
     if test $keep -lt 2; then
-        rm -f $outfile $errfile $cmpfile $cleanfiles
+        set +f
+        rm -f "$outfile" "$errfile" "$cmpfile" $cleanfiles
     fi
 elif test $gen = "no"; then
     echo "Test $test failed. Look at $errfile for details."

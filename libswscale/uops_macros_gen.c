@@ -16,6 +16,9 @@
  * Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA
  */
 
+#include <errno.h>
+#include <stdbool.h>
+#include <stdio.h>
 #include <string.h>
 
 #ifdef _WIN32
@@ -28,6 +31,7 @@
 #include "libavutil/macros.h"
 #include "libavutil/mem.h"
 #include "libavutil/pixfmt.h"
+#include "libavutil/thread.h"
 #include "libavutil/tree.h"
 #include "ops.h"
 #include "ops_dispatch.h"
@@ -55,6 +59,70 @@ static const struct {
     [SWS_PIXEL_F32]  = { "SWS_PIXEL_F32",  "F32_" },
 };
 
+/* Print uop params either as C struct designators, or as plain values */
+static void print_params(AVBPrint *bp, const SwsUOp *uop, bool designated)
+{
+#define FMT(FIELD, VALUE, ...)     av_bprintf(bp, designated ? ", ." FIELD " = " VALUE      : ", " VALUE, __VA_ARGS__)
+#define FMT_SUB(FIELD, VALUE, ...) av_bprintf(bp, designated ? ", ." FIELD " = {" VALUE "}" : ", " VALUE, __VA_ARGS__)
+
+    const SwsUOpParams *par = &uop->par;
+    switch (uop->uop) {
+    case SWS_UOP_READ_PLANAR_FH:
+    case SWS_UOP_READ_PLANAR_FV:
+    case SWS_UOP_READ_PLANAR_FV_FMA:
+        FMT("par.filter.type", "%s", pixel_types[par->filter.type].full);
+        break;
+    case SWS_UOP_RW_SHUFFLE:
+        FMT("par.shuffle.clear_value", "0x%x", par->shuffle.clear_value);
+        FMT("par.shuffle.read_size",   "%u",   par->shuffle.read_size);
+        FMT("par.shuffle.write_size",  "%u",   par->shuffle.write_size);
+        break;
+    case SWS_UOP_LSHIFT:
+    case SWS_UOP_RSHIFT:
+        FMT("par.shift.amount", "%u", par->shift.amount);
+        break;
+    case SWS_UOP_PERMUTE:
+    case SWS_UOP_COPY:
+        FMT("par.move.num_moves", "%d", par->move.num_moves);
+        FMT_SUB("par.move.dst", "%d, %d, %d, %d, %d, %d",
+                par->move.dst[0], par->move.dst[1], par->move.dst[2],
+                par->move.dst[3], par->move.dst[4], par->move.dst[5]);
+        FMT_SUB("par.move.src", "%d, %d, %d, %d, %d, %d",
+                par->move.src[0], par->move.src[1], par->move.src[2],
+                par->move.src[3], par->move.src[4], par->move.src[5]);
+        break;
+    case SWS_UOP_PACK:
+    case SWS_UOP_UNPACK:
+        FMT_SUB("par.pack.pattern", "%d, %d, %d, %d",
+                par->pack.pattern[0], par->pack.pattern[1],
+                par->pack.pattern[2], par->pack.pattern[3]);
+        break;
+    case SWS_UOP_CLEAR:
+        FMT("par.clear.one",  "0x%05x", par->clear.one);
+        FMT("par.clear.zero", "0x%05x", par->clear.zero);
+        break;
+    case SWS_UOP_LINEAR:
+    case SWS_UOP_LINEAR_FMA:
+        FMT("par.lin.one",  "0x%05x", par->lin.one);
+        FMT("par.lin.zero", "0x%05x", par->lin.zero);
+        if (uop->uop == SWS_UOP_LINEAR_FMA)
+            FMT("par.lin.exact", "0x%05x", par->lin.exact);
+        break;
+    case SWS_UOP_DITHER:
+        FMT_SUB("par.dither.y_offset", "%u, %u, %u, %u",
+                par->dither.y_offset[0], par->dither.y_offset[1],
+                par->dither.y_offset[2], par->dither.y_offset[3]);
+        FMT("par.dither.size_log2", "%u", par->dither.size_log2);
+        break;
+    case SWS_UOP_LUT_3D:
+        FMT("par.lut3d.dynamic", "%d", par->lut3d.dynamic);
+        break;
+    }
+
+#undef FMT
+#undef FMT_SUB
+}
+
 static int generate_entry_struct(void *opaque, void *key)
 {
     const SwsUOp *ref = opaque;
@@ -65,63 +133,7 @@ static int generate_entry_struct(void *opaque, void *key)
     av_bprintf(bp, " \\\n    MACRO(__VA_ARGS__, %-40s", name);
     av_bprintf(bp, ", .type = %-13s, .uop = %-24s, .mask = 0x%x",
                pixel_types[uop->type].full, uop_names[uop->uop].full, uop->mask);
-
-    const SwsUOpParams *par = &uop->par;
-    switch (uop->uop) {
-    case SWS_UOP_READ_PLANAR_FH:
-    case SWS_UOP_READ_PLANAR_FV:
-    case SWS_UOP_READ_PLANAR_FV_FMA:
-        av_bprintf(bp, ", .par.filter.type = %s", pixel_types[par->filter.type].full);
-        break;
-    case SWS_UOP_RW_SHUFFLE:
-        av_bprintf(bp, ", .par.shuffle.clear_value = 0x%x"
-                       ", .par.shuffle.read_size = %u"
-                       ", .par.shuffle.write_size = %u",
-                   par->shuffle.clear_value,
-                   par->shuffle.read_size, par->shuffle.write_size);
-        break;
-    case SWS_UOP_LSHIFT:
-    case SWS_UOP_RSHIFT:
-        av_bprintf(bp, ", .par.shift.amount = %u", par->shift.amount);
-        break;
-    case SWS_UOP_PERMUTE:
-    case SWS_UOP_COPY:
-        av_bprintf(bp, ", .par.move.num_moves = %d", par->move.num_moves);
-        av_bprintf(bp, ", .par.move.dst = {%d, %d, %d, %d, %d, %d}",
-                   par->move.dst[0], par->move.dst[1], par->move.dst[2],
-                   par->move.dst[3], par->move.dst[4], par->move.dst[5]);
-        av_bprintf(bp, ", .par.move.src = {%d, %d, %d, %d, %d, %d}",
-                   par->move.src[0], par->move.src[1], par->move.src[2],
-                   par->move.src[3], par->move.src[4], par->move.src[5]);
-        break;
-    case SWS_UOP_PACK:
-    case SWS_UOP_UNPACK:
-        av_bprintf(bp, ", .par.pack.pattern = {%d, %d, %d, %d}",
-                   par->pack.pattern[0], par->pack.pattern[1],
-                   par->pack.pattern[2], par->pack.pattern[3]);
-        break;
-    case SWS_UOP_CLEAR:
-        av_bprintf(bp, ", .par.clear.one = 0x%x, .par.clear.zero = 0x%x",
-                   par->clear.one, par->clear.zero);
-        break;
-    case SWS_UOP_LINEAR:
-    case SWS_UOP_LINEAR_FMA:
-        av_bprintf(bp, ", .par.lin.one = 0x%x, .par.lin.zero = 0x%x",
-                   par->lin.one, par->lin.zero);
-        if (uop->uop == SWS_UOP_LINEAR_FMA)
-            av_bprintf(bp, ", .par.lin.exact = 0x%x", par->lin.exact);
-        break;
-    case SWS_UOP_DITHER:
-        av_bprintf(bp, ", .par.dither = { .y_offset = {%u, %u, %u, %u}, .size_log2 = %u }",
-                   par->dither.y_offset[0], par->dither.y_offset[1],
-                   par->dither.y_offset[2], par->dither.y_offset[3],
-                   par->dither.size_log2);
-        break;
-    case SWS_UOP_LUT_3D:
-        av_bprintf(bp, ", .par.lut3d.dynamic = %d", par->lut3d.dynamic);
-        break;
-    }
-
+    print_params(bp, uop, true);
     av_bprintf(bp, ")");
     return 0;
 }
@@ -135,63 +147,31 @@ static int generate_entry_args(void *opaque, void *key)
     ff_sws_uop_name(uop, name);
     av_bprintf(bp, " \\\n    MACRO(__VA_ARGS__, %-40s, %-13s, %-24s, 0x%x",
                name, pixel_types[uop->type].full, uop_names[uop->uop].full, uop->mask);
-
-    const SwsUOpParams *par = &uop->par;
-    switch (uop->uop) {
-    case SWS_UOP_READ_PLANAR_FH:
-    case SWS_UOP_READ_PLANAR_FV:
-    case SWS_UOP_READ_PLANAR_FV_FMA:
-        av_bprintf(bp, ", %s", pixel_types[par->filter.type].full);
-        break;
-    case SWS_UOP_RW_SHUFFLE:
-        av_bprintf(bp, ", 0x%x, %u, %u", par->shuffle.clear_value,
-                   par->shuffle.read_size, par->shuffle.write_size);
-        break;
-    case SWS_UOP_LSHIFT:
-    case SWS_UOP_RSHIFT:
-        av_bprintf(bp, ", %u", par->shift.amount);
-        break;
-    case SWS_UOP_PERMUTE:
-    case SWS_UOP_COPY:
-        av_bprintf(bp, ", %d", par->move.num_moves);
-        av_bprintf(bp, ", %d, %d, %d, %d, %d, %d",
-                   par->move.dst[0], par->move.dst[1], par->move.dst[2],
-                   par->move.dst[3], par->move.dst[4], par->move.dst[5]);
-        av_bprintf(bp, ", %d, %d, %d, %d, %d, %d",
-                   par->move.src[0], par->move.src[1], par->move.src[2],
-                   par->move.src[3], par->move.src[4], par->move.src[5]);
-        break;
-    case SWS_UOP_PACK:
-    case SWS_UOP_UNPACK:
-        av_bprintf(bp, ", %d, %d, %d, %d",
-                   par->pack.pattern[0], par->pack.pattern[1],
-                   par->pack.pattern[2], par->pack.pattern[3]);
-        break;
-    case SWS_UOP_CLEAR:
-        av_bprintf(bp, ", 0x%05x, 0x%05x", par->clear.one, par->clear.zero);
-        break;
-    case SWS_UOP_LINEAR:
-    case SWS_UOP_LINEAR_FMA:
-        av_bprintf(bp, ", 0x%05x, 0x%05x", par->lin.one, par->lin.zero);
-        if (uop->uop == SWS_UOP_LINEAR_FMA)
-            av_bprintf(bp, ", 0x%05x", par->lin.exact);
-        break;
-    case SWS_UOP_DITHER:
-        av_bprintf(bp, ", %u, %u, %u, %u, %u",
-                   par->dither.y_offset[0], par->dither.y_offset[1],
-                   par->dither.y_offset[2], par->dither.y_offset[3],
-                   par->dither.size_log2);
-        break;
-    case SWS_UOP_LUT_3D:
-        av_bprintf(bp, ", %d", par->lut3d.dynamic);
-        break;
-    }
-
+    print_params(bp, uop, false);
     av_bprintf(bp, ")");
     return 0;
 }
 
-static int register_uop(struct AVTreeNode **root, const SwsUOp *uop)
+static int generate_entry_nasm(void *opaque, void *key)
+{
+    const SwsUOp *ref = opaque;
+    const SwsUOp *uop = key;
+    AVBPrint *bp = ref->data.opaque;
+    char name[SWS_UOP_NAME_MAX];
+    ff_sws_uop_name(uop, name);
+    av_bprintf(bp, "\n    DECL_OP %%1, %-40s, %-13s, %-24s, 0x%x",
+               name, pixel_types[uop->type].full, uop_names[uop->uop].full, uop->mask);
+    print_params(bp, uop, false);
+    return 0;
+}
+
+struct EnumPriv {
+    const struct Backend *backend;
+    struct AVTreeNode *root;
+    AVMutex lock;
+};
+
+static int register_uop(struct EnumPriv *s, const SwsUOp *uop)
 {
     SwsUOp *key = av_memdup(uop, sizeof(*uop));
     if (!key)
@@ -204,7 +184,9 @@ static int register_uop(struct AVTreeNode **root, const SwsUOp *uop)
         return AVERROR(ENOMEM);
     }
 
-    av_tree_insert(root, key, ff_sws_uop_cmp_v, &node);
+    ff_mutex_lock(&s->lock);
+    av_tree_insert(&s->root, key, ff_sws_uop_cmp_v, &node);
+    ff_mutex_unlock(&s->lock);
     if (node) {
         av_free(node);
         av_free(key);
@@ -222,9 +204,8 @@ static int register_flags(SwsContext *ctx, const SwsOpList *ops, SwsUOpFlags fla
     if (ret < 0)
         goto fail;
 
-    struct AVTreeNode **root = ctx->opaque;
     for (int i = 0; i < uops->num_ops; i++) {
-        ret = register_uop(root, &uops->ops[i]);
+        ret = register_uop(ctx->opaque, &uops->ops[i]);
         if (ret < 0)
             goto fail;
     }
@@ -234,16 +215,49 @@ fail:
     return ret;
 }
 
-static const SwsUOpFlags uop_flags[] = {
-    0,
-    SWS_UOP_FLAG_PSHUFB | SWS_UOP_FLAG_FMA, /* x86 backend */
+enum {
+    COMMON_FLAGS = SWS_UOP_FLAG_EXPAND_BIT | SWS_UOP_FLAG_READ_PALETTE |
+                   SWS_UOP_FLAG_ADD | SWS_UOP_FLAG_PUNNING,
 };
+
+typedef struct Backend {
+    const char *name;
+    const char *guard; /* include guard for the generated C header */
+    SwsUOpFlags flags[2]; /* all flag combinations used by the backend */
+} Backend;
+
+static const Backend backends[] = {
+    {
+        .name  = "c",
+        .guard = "SWSCALE_UOPS_MACROS_H",
+        .flags = { COMMON_FLAGS },
+    }, {
+        .name  = "x86",
+        .guard = "SWSCALE_X86_UOPS_MACROS_H",
+        .flags = {
+            COMMON_FLAGS | SWS_UOP_FLAG_PSHUFB,
+            COMMON_FLAGS | SWS_UOP_FLAG_PSHUFB | SWS_UOP_FLAG_FMA, /* FMA3 */
+        },
+    },
+};
+
+static const Backend *find_backend(const char *name)
+{
+    for (int i = 0; i < FF_ARRAY_ELEMS(backends); i++) {
+        if (!strcmp(backends[i].name, name))
+            return &backends[i];
+    }
+    return NULL;
+}
 
 static int register_uops(SwsContext *ctx, const SwsOpList *ops,
                          SwsCompiledOp *out)
 {
-    for (int i = 0; i < FF_ARRAY_ELEMS(uop_flags); i++) {
-        int ret = register_flags(ctx, ops, uop_flags[i]);
+    const struct EnumPriv *s = ctx->opaque;
+    for (int i = 0; i < FF_ARRAY_ELEMS(s->backend->flags); i++) {
+        if (!s->backend->flags[i])
+            break;
+        int ret = register_flags(ctx, ops, s->backend->flags[i]);
         if (ret < 0)
             return ret;
     }
@@ -293,39 +307,43 @@ static int free_uop_key(void *opaque, void *key)
     return 0;
 }
 
+static void free_uops(struct AVTreeNode **root)
+{
+    av_tree_enumerate(*root, NULL, NULL, free_uop_key);
+    av_tree_destroy(*root);
+    *root = NULL;
+}
+
 /**
- * Generate a set of boilerplate C preprocessor macros for describing and
- * programmatically iterating over all possible SwsUOps.
+ * Collect all unique SwsUOps used by `backend` into a newly allocated tree.
  *
  * This function can be quite slow as it iterates over every possible
  * combination of pixel formats and flags.
  *
- * Returns 0 or a negative error code. On success, an allocated string is
- * returned via `out_str`, and must be av_free()'d by the caller.
+ * Returns 0 or a negative error code. On success, the tree is returned via
+ * `root`, and must be freed with free_uops() by the caller.
  */
-static int sws_uops_macros_gen(char **out_str)
+static int collect_uops(struct AVTreeNode **root, const Backend *backend)
 {
-    int ret;
-    struct AVTreeNode *root = NULL;
+    struct EnumPriv s = { .backend = backend };
     SwsLut3D *lut3d = NULL;
-
-    AVBPrint bprint, *const bp = &bprint;
-    av_bprint_init(bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+    int ret = ff_mutex_init(&s.lock, NULL);
+    if (ret)
+        return AVERROR(ENOSYS);
 
     /* Allocate dummy graph and context for ff_sws_compile_pass() */
     SwsGraph *graph = ff_sws_graph_alloc();
-    if (!graph)
-        return AVERROR(ENOMEM);
-
-    SwsContext *ctx = graph->ctx = sws_alloc_context();
-    if (!ctx) {
+    SwsContext *ctx = sws_alloc_context();
+    if (!graph || !ctx) {
         ret = AVERROR(ENOMEM);
         goto fail;
     }
 
-    /* Use this to plumb the tree state through all the layers of abstraction */
-    ctx->opaque = &root;
+    /* Use this to plumb the enum state through all the layers of abstraction */
+    graph->ctx = ctx;
+    ctx->opaque = &s;
     ctx->scaler = SWS_SCALE_BILINEAR; /* cheaper to generate filter kernels */
+    ctx->threads = 0; /* use slice threading to speed up tree building */
 
     /* Allocate dummy 3DLUT to force generation of SWS_UOP_LUT_3D */
     lut3d = ff_sws_lut3d_alloc();
@@ -353,20 +371,45 @@ static int sws_uops_macros_gen(char **out_str)
             goto fail;
     }
 
-    #define BPRINT_STR(str) av_bprint_append_data(bp, str, strlen(str))
+    *root = s.root;
+    s.root = NULL;
+
+fail:
+    av_refstruct_unref(&lut3d);
+    free_uops(&s.root);
+    ff_mutex_destroy(&s.lock);
+    ff_sws_graph_free(&graph);
+    sws_free_context(&ctx);
+    return ret;
+}
+
+#define BPRINT_STR(str) av_bprint_append_data(bp, str, strlen(str))
+
+/**
+ * Generate a set of boilerplate C preprocessor macros for describing and
+ * programmatically iterating over all SwsUOps in the tree at `root`.
+ *
+ * Returns 0 or a negative error code. On success, an allocated string is
+ * returned via `out_str`, and must be av_free()'d by the caller.
+ */
+static int print_macros(struct AVTreeNode *root, const Backend *backend,
+                        char **out_str)
+{
+    AVBPrint bprint, *const bp = &bprint;
+    av_bprint_init(bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+
     BPRINT_STR(
 "/**\n"
 " * This file is automatically generated. Do not edit manually.\n"
 " * To regenerate, run: make fate-sws-uops-macros GEN=1\n"
 " */\n"
-"\n"
-"#ifndef SWSCALE_UOPS_MACROS_H\n"
-"#define SWSCALE_UOPS_MACROS_H\n"
-"\n"
+"\n");
+    av_bprintf(bp, "#ifndef %s\n#define %s\n\n", backend->guard, backend->guard);
+    BPRINT_STR(
 "/**\n"
 " * Boilerplate helper macros, for template-based backends. These will be\n"
 " * instantiated like this, with parameters in struct order:\n"
-" *   MACRO(__VA_ARGS__, NAME, UOP, TYPE, MASK, [PARAMS,])\n"
+" *   MACRO(__VA_ARGS__, NAME, TYPE, UOP, MASK, [PARAMS,])\n"
 " * The _STRUCT variants pass all arguments in C struct syntax, while the\n"
 " * plain variants give them as separate C values (e.g. for use in calls)\n"
 " */\n"
@@ -391,17 +434,67 @@ static int sws_uops_macros_gen(char **out_str)
         }
     }
 
-    BPRINT_STR("\n#endif /* SWSCALE_UOPS_MACROS_H */");
-    ret = av_bprint_finalize(bp, out_str);
+    av_bprintf(bp, "\n#endif /* %s */", backend->guard);
+    return av_bprint_finalize(bp, out_str);
+}
 
-fail:
-    av_refstruct_unref(&lut3d);
-    av_bprint_finalize(bp, NULL);
-    av_tree_enumerate(root, NULL, NULL, free_uop_key);
-    av_tree_destroy(root);
-    ff_sws_graph_free(&graph);
-    sws_free_context(&ctx);
+/**
+ * Generate the equivalent NASM macros, as one DECL_<TYPE>_<UOP> macro per
+ * uop group. Same return semantics as print_macros().
+ */
+static int print_nasm_macros(struct AVTreeNode *root, char **out_str)
+{
+    AVBPrint bprint, *const bp = &bprint;
+    av_bprint_init(bp, 0, AV_BPRINT_SIZE_UNLIMITED);
+
+    BPRINT_STR(
+";******************************************************************************\n"
+";* This file is automatically generated. Do not edit manually.\n"
+";* To regenerate, run: make fate-sws-uops-macros GEN=1\n"
+";*\n"
+";* Boilerplate helper macros, for template-based backends. Invoking\n"
+";* DECL_<TYPE>_<UOP> MACRO will instantiate, for every matching uop:\n"
+";*   DECL_OP MACRO, NAME, TYPE, UOP, MASK, [PARAMS]\n"
+";* with parameters in struct order.\n"
+";******************************************************************************");
+
+    SwsUOp key = { .data.opaque = bp };
+    for (key.type = SWS_PIXEL_NONE + 1; key.type < SWS_PIXEL_TYPE_NB; key.type++) {
+        for (key.uop = SWS_UOP_INVALID + 1; key.uop < SWS_UOP_TYPE_NB; key.uop++) {
+            const char *macro  = uop_names[key.uop].full + sizeof("SWS_UOP_") - 1;
+            const char *prefix = pixel_types[key.type].prefix;
+            av_bprintf(bp, "\n\n%%macro DECL_%s%s 1", prefix, macro);
+            av_tree_enumerate(root, &key, enum_type, generate_entry_nasm);
+            av_bprintf(bp, "\n%%endmacro");
+        }
+    }
+
+    return av_bprint_finalize(bp, out_str);
+}
+
+static int write_file(const char *path, const char *str)
+{
+    FILE *out = fopen(path, "wb");
+    if (!out) {
+        int ret = AVERROR(errno);
+        fprintf(stderr, "Failed to open %s: %s\n", path, av_err2str(ret));
+        return ret;
+    }
+
+    int ret = 0;
+    if (fputs(str, out) < 0 || fputc('\n', out) < 0)
+        ret = AVERROR(EIO);
+    if (fclose(out) != 0 && ret >= 0)
+        ret = AVERROR(errno);
     return ret;
+}
+
+static int usage(void)
+{
+    fprintf(stderr, "Usage: uops_macros_gen [-backend BACKEND] [-nasm FILE]\n"
+                    "Writes C macros to stdout, and optionally NASM macros to FILE\n"
+                    "BACKEND is one of: c (default), x86\n");
+    return 1;
 }
 
 int main(int argc, char **argv)
@@ -410,10 +503,40 @@ int main(int argc, char **argv)
     _setmode(_fileno(stdout), _O_BINARY);
 #endif
 
+    const Backend *backend = &backends[0];
+    const char *nasm_path = NULL;
+    for (int i = 1; i < argc; i += 2) {
+        if (i + 1 >= argc)
+            return usage();
+        if (!strcmp(argv[i], "-backend")) {
+            backend = find_backend(argv[i + 1]);
+            if (!backend)
+                return usage();
+        } else if (!strcmp(argv[i], "-nasm")) {
+            nasm_path = argv[i + 1];
+        } else {
+            return usage();
+        }
+    }
+
+    struct AVTreeNode *root = NULL;
+    int ret = collect_uops(&root, backend);
+    if (ret < 0)
+        return ret;
+
     char *macros = NULL;
-    int ret = sws_uops_macros_gen(&macros);
+    ret = print_macros(root, backend, &macros);
     if (ret >= 0)
         puts(macros);
     av_free(macros);
+
+    if (ret >= 0 && nasm_path) {
+        ret = print_nasm_macros(root, &macros);
+        if (ret >= 0)
+            ret = write_file(nasm_path, macros);
+        av_free(macros);
+    }
+
+    free_uops(&root);
     return ret;
 }

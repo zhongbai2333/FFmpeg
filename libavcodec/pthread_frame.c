@@ -476,6 +476,7 @@ static int update_context_from_user(AVCodecContext *dst, const AVCodecContext *s
 
     dst->skip_loop_filter = src->skip_loop_filter;
     dst->skip_idct        = src->skip_idct;
+    dst->skip_pred        = src->skip_pred;
     dst->skip_frame       = src->skip_frame;
 
     dst->frame_num        = src->frame_num;
@@ -789,6 +790,7 @@ av_cold void ff_frame_thread_free(AVCodecContext *avctx, int thread_count)
         ff_pthread_free(p, per_thread_offsets);
         av_packet_free(&p->avpkt);
 
+        av_channel_layout_uninit(&ctx->ch_layout);
         av_freep(&p->avctx);
     }
 
@@ -820,9 +822,11 @@ static av_cold int init_thread(PerThreadContext *p, int *threads_to_free,
     copy = av_memdup(avctx, sizeof(*avctx));
     if (!copy)
         return AVERROR(ENOMEM);
+    copy->internal = NULL;
     copy->priv_data = NULL;
     copy->decoded_side_data = NULL;
     copy->nb_decoded_side_data = 0;
+    copy->ch_layout = (AVChannelLayout){ 0 };
 
     /* From now on, this PerThreadContext will be cleaned up by
      * ff_frame_thread_free in case of errors. */
@@ -830,6 +834,10 @@ static av_cold int init_thread(PerThreadContext *p, int *threads_to_free,
 
     p->parent = fctx;
     p->avctx  = copy;
+
+    err = av_channel_layout_copy(&copy->ch_layout, &avctx->ch_layout);
+    if (err < 0)
+        return err;
 
     copy->internal = ff_decode_internal_alloc();
     if (!copy->internal)
@@ -883,16 +891,20 @@ static av_cold int init_thread(PerThreadContext *p, int *threads_to_free,
     p->thread_init = NEEDS_CLOSE;
 
     if (first) {
-        update_context_from_thread(avctx, copy, 1);
+        err = update_context_from_thread(avctx, copy, 1);
+        if (err < 0)
+            return err;
+    }
 
-        av_frame_side_data_free(&avctx->decoded_side_data, &avctx->nb_decoded_side_data);
-        for (int i = 0; i < copy->nb_decoded_side_data; i++) {
-            err = av_frame_side_data_clone(&avctx->decoded_side_data,
-                                           &avctx->nb_decoded_side_data,
-                                           copy->decoded_side_data[i], 0);
-            if (err < 0)
-                return err;
-        }
+    const AVCodecContext *src = first ? copy : avctx;
+    AVCodecContext       *dst = first ? avctx : copy;
+    av_frame_side_data_free(&dst->decoded_side_data, &dst->nb_decoded_side_data);
+    for (int i = 0; i < src->nb_decoded_side_data; i++) {
+        err = av_frame_side_data_clone(&dst->decoded_side_data,
+                                       &dst->nb_decoded_side_data,
+                                       src->decoded_side_data[i], 0);
+        if (err < 0)
+            return err;
     }
 
     atomic_init(&p->debug_threads, (copy->debug & FF_DEBUG_THREADS) != 0);

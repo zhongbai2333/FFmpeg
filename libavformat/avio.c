@@ -38,6 +38,7 @@
 #include "url.h"
 
 #define IO_BUFFER_SIZE 32768
+#define NETWORK_IO_BUFFER_SIZE 262144
 
 /** @name Logging context. */
 /*@{*/
@@ -152,6 +153,7 @@ static int url_alloc_for_protocol(URLContext **puc, const URLProtocol *up,
     uc->prot            = up;
     uc->flags           = flags;
     uc->is_streamed     = 0; /* default = not streamed */
+    uc->uses_network    = !!(up->flags & URL_PROTOCOL_FLAG_NETWORK);
     uc->max_packet_size = 0; /* default: stream file */
     if (up->priv_data_size) {
         uc->priv_data = av_mallocz(up->priv_data_size);
@@ -451,8 +453,11 @@ static int url_open_whitelist(URLContext **puc, const char *filename, int flags,
 
     ret = ffurl_connect(*puc, options);
 
-    if (!ret)
+    if (!ret) {
+        if (parent)
+            parent->uses_network |= (*puc)->uses_network;
         return 0;
+    }
 fail:
     ffurl_closep(puc);
     return ret;
@@ -476,6 +481,8 @@ int ffio_fdopen(AVIOContext **sp, URLContext *h)
     max_packet_size = h->max_packet_size;
     if (max_packet_size) {
         buffer_size = max_packet_size; /* no need to bufferize more than one packet */
+    } else if (h->uses_network && !(h->flags & AVIO_FLAG_WRITE)) {
+        buffer_size = NETWORK_IO_BUFFER_SIZE;
     } else {
         buffer_size = IO_BUFFER_SIZE;
     }
@@ -790,7 +797,7 @@ struct AVIODirContext {
     struct URLContext *url_context;
 };
 
-int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
+int avio_open_dir2(AVIODirContext **s, const char *url, const AVIOInterruptCB *int_cb, AVDictionary **options)
 {
     URLContext *h = NULL;
     AVIODirContext *ctx = NULL;
@@ -803,7 +810,7 @@ int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
         goto fail;
     }
 
-    if ((ret = ffurl_alloc(&h, url, AVIO_FLAG_READ, NULL)) < 0)
+    if ((ret = ffurl_alloc(&h, url, AVIO_FLAG_READ, int_cb)) < 0)
         goto fail;
 
     if (h->prot->url_open_dir && h->prot->url_read_dir && h->prot->url_close_dir) {
@@ -826,6 +833,11 @@ int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
     *s = NULL;
     ffurl_close(h);
     return ret;
+}
+
+int avio_open_dir(AVIODirContext **s, const char *url, AVDictionary **options)
+{
+    return avio_open_dir2(s, url, NULL, options);
 }
 
 int avio_read_dir(AVIODirContext *s, AVIODirEntry **next)

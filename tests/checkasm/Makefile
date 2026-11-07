@@ -7,7 +7,6 @@ AVCODECOBJS-$(CONFIG_AUDIODSP)          += audiodsp.o
 AVCODECOBJS-$(CONFIG_BLOCKDSP)          += blockdsp.o
 AVCODECOBJS-$(CONFIG_BSWAPDSP)          += bswapdsp.o
 AVCODECOBJS-$(CONFIG_FDCTDSP)           += fdctdsp.o
-AVCODECOBJS-$(CONFIG_FMTCONVERT)        += fmtconvert.o
 AVCODECOBJS-$(CONFIG_G722DSP)           += g722dsp.o
 AVCODECOBJS-$(CONFIG_H263DSP)           += h263dsp.o
 AVCODECOBJS-$(CONFIG_H264CHROMA)        += h264chroma.o
@@ -37,6 +36,7 @@ AVCODECOBJS-$(CONFIG_AAC_DECODER)       += aacpsdsp.o \
 AVCODECOBJS-$(CONFIG_AAC_ENCODER)       += aacencdsp.o
 AVCODECOBJS-$(CONFIG_ALAC_DECODER)      += alacdsp.o
 AVCODECOBJS-$(CONFIG_APV_DECODER)       += apv_dsp.o
+AVCODECOBJS-$(CONFIG_BITPACKED_DECODER) += bitpackeddec.o
 AVCODECOBJS-$(CONFIG_CAVS_DECODER)      += cavsdsp.o
 AVCODECOBJS-$(CONFIG_DCA_DECODER)       += dcadsp.o synth_filter.o
 AVCODECOBJS-$(CONFIG_DIRAC_DECODER)     += diracdsp.o
@@ -49,6 +49,7 @@ AVCODECOBJS-$(CONFIG_PIXBLOCKDSP)       += pixblockdsp.o
 AVCODECOBJS-$(CONFIG_HEVC_DECODER)      += hevc_add_res.o hevc_deblock.o hevc_dequant.o \
 					   hevc_idct.o hevc_pel.o hevc_pred.o hevc_sao.o
 AVCODECOBJS-$(CONFIG_PNG_DECODER)       += png.o
+AVCODECOBJS-$(CONFIG_PRORES_DECODER)    += proresdsp.o
 AVCODECOBJS-$(CONFIG_RV34DSP)           += rv34dsp.o
 AVCODECOBJS-$(CONFIG_RV40_DECODER)      += rv40dsp.o
 AVCODECOBJS-$(CONFIG_SBC_ENCODER)       += sbcdsp.o
@@ -63,7 +64,7 @@ AVCODECOBJS-$(CONFIG_V210_ENCODER)      += v210enc.o
 AVCODECOBJS-$(CONFIG_VORBIS_DECODER)    += vorbisdsp.o
 AVCODECOBJS-$(CONFIG_VP6_DECODER)       += vp6dsp.o
 AVCODECOBJS-$(CONFIG_VP9_DECODER)       += vp9dsp.o
-AVCODECOBJS-$(CONFIG_VVC_DECODER)       += vvc_alf.o vvc_mc.o vvc_sao.o
+AVCODECOBJS-$(CONFIG_VVC_DECODER)       += vvc_alf.o vvc_mc.o vvc_pred.o vvc_sao.o
 
 CHECKASMOBJS-$(CONFIG_AVCODEC)          += $(AVCODECOBJS-yes)
 
@@ -80,6 +81,7 @@ AVFILTEROBJS-$(CONFIG_FSPP_FILTER)       += vf_fspp.o
 AVFILTEROBJS-$(CONFIG_GBLUR_FILTER)      += vf_gblur.o
 AVFILTEROBJS-$(CONFIG_HFLIP_FILTER)      += vf_hflip.o
 AVFILTEROBJS-$(CONFIG_IDET_FILTER)       += vf_idet.o
+AVFILTEROBJS-$(CONFIG_LIMITER_FILTER)    += vf_limiter.o
 AVFILTEROBJS-$(CONFIG_PP7_FILTER)        += vf_pp7.o
 AVFILTEROBJS-$(CONFIG_THRESHOLD_FILTER)  += vf_threshold.o
 AVFILTEROBJS-$(CONFIG_NLMEANS_FILTER)    += vf_nlmeans.o
@@ -102,6 +104,7 @@ CHECKASMOBJS-$(CONFIG_SWSCALE)  += $(SWSCALEOBJS)
 # libavutil tests
 AVUTILOBJS                              += aes.o
 AVUTILOBJS                              += av_tx.o
+AVUTILOBJS                              += base64.o
 AVUTILOBJS                              += crc.o
 AVUTILOBJS                              += fixed_dsp.o
 AVUTILOBJS                              += float_dsp.o
@@ -110,26 +113,26 @@ AVUTILOBJS-$(CONFIG_PIXELUTILS)         += pixelutils.o
 
 CHECKASMOBJS-$(CONFIG_AVUTIL)  += $(AVUTILOBJS) $(AVUTILOBJS-yes)
 
-EXT_CHECKASMOBJS-$(ARCH_AARCH64)            += ext/src/arm/checkasm_64.o
-EXT_CHECKASMOBJS-$(ARCH_ARM)                += ext/src/arm/checkasm_32.o
+EXT_CHECKASMOBJS-$(ARCH_AARCH64)            += ext/src/arm/checkasm_64.o \
+                                               ext/src/arm/cpu.o ext/src/perf/arm.o
+EXT_CHECKASMOBJS-$(ARCH_ARM)                += ext/src/arm/checkasm_32.o \
+                                               ext/src/arm/cpu.o ext/src/perf/arm.o
 EXT_CHECKASMOBJS-$(ARCH_LOONGARCH)          += ext/src/loongarch/checkasm.o
+EXT_CHECKASMOBJS-$(CONFIG_LINUX_PERF)       += ext/src/perf/linux.o
+EXT_CHECKASMOBJS-$(ARCH_AARCH64)            += ext/src/perf/macos_kperf.o
 EXT_CHECKASMOBJS-$(HAVE_RV)                 += ext/src/riscv/callcheck.o
+EXT_CHECKASMOBJS-$(ARCH_RISCV)              += ext/src/riscv/cpu.o
 EXT_CHECKASMOBJS-$(HAVE_X86ASM)             += ext/src/x86/checkasm.o
+EXT_CHECKASMOBJS-$(ARCH_X86)                += ext/src/x86/cpu.o
 
-EXT_CHECKASMOBJS += ext/src/arm/cpu.o                  \
-                    ext/src/checkasm.o                 \
+EXT_CHECKASMOBJS += ext/src/checkasm.o                 \
                     ext/src/cpu.o                      \
                     ext/src/function.o                 \
                     ext/src/perf.o                     \
-                    ext/src/perf/arm.o                 \
-                    ext/src/perf/linux.o               \
-                    ext/src/perf/macos_kperf.o         \
-                    ext/src/riscv/cpu.o                \
                     ext/src/signal.o                   \
                     ext/src/stackguard.o               \
                     ext/src/stats.o                    \
                     ext/src/utils.o                    \
-                    ext/src/x86/cpu.o                  \
 
 EXT_CHECKASMOBJS += $(EXT_CHECKASMOBJS-yes)
 $(EXT_CHECKASMOBJS:%=tests/checkasm/%): CFLAGS      += -I$(SRC_PATH)/tests/checkasm/ext/src
@@ -164,7 +167,7 @@ tests/checkasm/checkasm.o: CFLAGS += -Umain
 CHECKASM := tests/checkasm/checkasm$(EXESUF)
 
 $(CHECKASM): $(CHECKASMOBJS) $(FF_STATIC_DEP_LIBS)
-	$(call LINK,$(LDFLAGS) $(LDEXEFLAGS) $(LD_O) $(CHECKASMOBJS) $(FF_STATIC_DEP_LIBS) $(EXTRALIBS-avcodec) $(EXTRALIBS-avfilter) $(EXTRALIBS-avformat) $(EXTRALIBS-avutil) $(EXTRALIBS-swresample) $(EXTRALIBS) $(EXTRALIBS-checkasm))
+	$(call LINK,$(LDFLAGS) $(LDEXEFLAGS) $(LD_O) $(CHECKASMOBJS) $(FF_STATIC_DEP_LIBS) $(EXTRALIBS-avcodec) $(EXTRALIBS-avfilter) $(EXTRALIBS-avformat) $(EXTRALIBS-avutil) $(EXTRALIBS-swresample) $(EXTRALIBS-swscale) $(EXTRALIBS) $(EXTRALIBS-checkasm))
 
 run-checkasm: $(CHECKASM)
 run-checkasm:

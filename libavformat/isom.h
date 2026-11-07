@@ -33,6 +33,7 @@
 #include "libavutil/spherical.h"
 #include "libavutil/stereo3d.h"
 
+#include "libavcodec/exif.h"
 #include "avio.h"
 #include "internal.h"
 #include "dv.h"
@@ -297,8 +298,12 @@ typedef struct HEIFItemRef {
 
 typedef struct HEIFItem {
     AVStream *st;
-    HEIFItemRef *iref_list;
-    int nb_iref_list;
+    AVStreamGroup *stg;
+    HEIFItemRef *iref_from_list;
+    int nb_iref_from_list;
+    HEIFItemRef *iref_to_list;
+    int nb_iref_to_list;
+    int flags;
     char *name;
     int item_id;
     int64_t extent_length;
@@ -309,18 +314,21 @@ typedef struct HEIFItem {
     int hflip;
     int vflip;
     int type;
+    int is_gainmap;
+    int is_alpha;
     int is_idat_relative;
+    AVExifMetadata ifd;
     uint8_t *icc_profile;
     size_t icc_profile_size;
 } HEIFItem;
 
-typedef struct HEIFGrid {
+typedef struct HEIFGroup {
     HEIFItem *item;
-    HEIFItem **tile_item_list;
-    int16_t *tile_id_list;
-    unsigned *tile_idx_list;
-    int nb_tiles;
-} HEIFGrid;
+    HEIFItem **item_list;
+    int16_t *item_id_list;
+    unsigned *item_idx_list;
+    int nb_items;
+} HEIFGroup;
 
 typedef struct MOVContext {
     const AVClass *class; ///< class for private options
@@ -361,6 +369,8 @@ typedef struct MOVContext {
     int has_looked_for_mfra;
     int use_tfdt;
     MOVFragmentIndex frag_index;
+    uint8_t *pssh_side_data;
+    unsigned int pssh_side_data_allocated;
     int atom_depth;
     unsigned int aax_mode;  ///< 'aax' file has been detected
     uint8_t file_key[20];
@@ -385,8 +395,8 @@ typedef struct MOVContext {
     int cur_item_id;
     HEIFItem **heif_item;
     int nb_heif_item;
-    HEIFGrid *heif_grid;
-    int nb_heif_grid;
+    HEIFGroup *heif_group;
+    int nb_heif_group;
     int64_t idat_offset;
     int interleaved_read;
     AVDictionary* decryption_keys;
@@ -435,9 +445,22 @@ void ff_mp4_parse_es_descr(AVIOContext *pb, int *es_id);
 #define MOV_TKHD_FLAG_IN_PREVIEW    0x0004
 #define MOV_TKHD_FLAG_IN_POSTER     0x0008
 
+#define MOV_INFE_FLAG_HIDDEN            0x01
+
 #define MOV_SAMPLE_DEPENDENCY_UNKNOWN 0x0
 #define MOV_SAMPLE_DEPENDENCY_YES     0x1
 #define MOV_SAMPLE_DEPENDENCY_NO      0x2
+
+/* https://developer.apple.com/documentation/quicktime-file-format/graphics_modes */
+#define MOV_GRAPHICS_MODE_COPY                  0x0
+#define MOV_GRAPHICS_MODE_DITHER_COPY           0x40
+#define MOV_GRAPHICS_MODE_BLEND                 0x20
+#define MOV_GRAPHICS_MODE_TRANSPARENT           0x24
+#define MOV_GRAPHICS_MODE_STRAIGHT_ALPHA        0x100
+#define MOV_GRAPHICS_MODE_PREMUL_WHITE_ALPHA    0x101
+#define MOV_GRAPHICS_MODE_PREMUL_BLACK_ALPHA    0x102
+#define MOV_GRAPHICS_MODE_COMPOSITION           0x103
+#define MOV_GRAPHICS_MODE_STRAIGHT_ALPHA_BLEND  0x104
 
 #define TAG_IS_AVCI(tag)                    \
     ((tag) == MKTAG('a', 'i', '5', 'p') ||  \

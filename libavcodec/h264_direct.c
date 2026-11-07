@@ -184,20 +184,25 @@ void ff_h264_direct_ref_list_init(const H264Context *const h, H264SliceContext *
 static void await_reference_mb_row(const H264Context *const h, H264Ref *ref,
                                    int mb_y)
 {
+    if (!HAVE_THREADS || !(h->avctx->active_thread_type & FF_THREAD_FRAME))
+        return;
+
     int ref_field         = ref->reference - 1;
     int ref_field_picture = ref->parent->field_picture;
     int ref_height        = 16 * h->mb_height >> ref_field_picture;
-
-    if (!HAVE_THREADS || !(h->avctx->active_thread_type & FF_THREAD_FRAME))
-        return;
+    int row               = FFMIN(16 * mb_y >> ref_field_picture, ref_height - 1);
 
     /* FIXME: It can be safe to access mb stuff
      * even if pixels aren't deblocked yet. */
 
-    ff_thread_await_progress(&ref->parent->tf,
-                             FFMIN(16 * mb_y >> ref_field_picture,
-                                   ref_height - 1),
+    ff_thread_await_progress(&ref->parent->tf, row,
                              ref_field_picture && ref_field);
+
+    /* A frame references a field pair as a whole, so the wait above covers
+     * its bottom field only, while the colocated data is read from the field
+     * selected by col_parity. The two are decoded by different threads. */
+    if (ref_field_picture && !FIELD_PICTURE(h))
+        ff_thread_await_progress(&ref->parent->tf, row, 0);
 }
 
 static void pred_spatial_direct_motion(const H264Context *const h, H264SliceContext *sl,
@@ -207,6 +212,7 @@ static void pred_spatial_direct_motion(const H264Context *const h, H264SliceCont
     int b4_stride = h->b_stride;
     int mb_xy = sl->mb_xy, mb_y = sl->mb_y;
     int mb_type_col[2];
+    int col_field = 0;
     const int16_t (*l1mv0)[2], (*l1mv1)[2];
     const int8_t *l1ref0, *l1ref1;
     const int is_b8x8 = IS_8X8(*mb_type);
@@ -287,7 +293,8 @@ static void pred_spatial_direct_motion(const H264Context *const h, H264SliceCont
         return;
     }
 
-    if (IS_INTERLACED(sl->ref_list[1][0].parent->mb_type[mb_xy])) { // AFL/AFR/FR/FL -> AFL/FL
+    if (sl->ref_list[1][0].parent->field_picture ||
+        IS_INTERLACED(sl->ref_list[1][0].parent->mb_type[mb_xy])) { // AFL/AFR/FR/FL -> AFL/FL
         if (!IS_INTERLACED(*mb_type)) {                    //     AFR/FR    -> AFL/FL
             mb_y  = (sl->mb_y & ~1) + sl->col_parity;
             mb_xy = sl->mb_x +
@@ -297,6 +304,9 @@ static void pred_spatial_direct_motion(const H264Context *const h, H264SliceCont
             mb_y  += sl->col_fieldoff;
             mb_xy += h->mb_stride * sl->col_fieldoff; // non-zero for FL -> FL & differ parity
         }
+        // Undecoded macroblocks of a broken field picture lack the flag, the
+        // colocated type has to agree with the branch taken here.
+        col_field = MB_TYPE_INTERLACED;
         goto single_col;
     } else {                                             // AFL/AFR/FR/FL -> AFR/FR
         if (IS_INTERLACED(*mb_type)) {                   // AFL       /FL -> AFR/FR
@@ -323,7 +333,7 @@ static void pred_spatial_direct_motion(const H264Context *const h, H264SliceCont
         } else {                                         //     AFR/FR    -> AFR/FR
 single_col:
             mb_type_col[0] =
-            mb_type_col[1] = sl->ref_list[1][0].parent->mb_type[mb_xy];
+            mb_type_col[1] = sl->ref_list[1][0].parent->mb_type[mb_xy] | col_field;
 
             sub_mb_type |= MB_TYPE_16x16 | MB_TYPE_DIRECT2; /* B_SUB_8x8 */
             if (!is_b8x8 && (mb_type_col[0] & MB_TYPE_16x16_OR_INTRA)) {
@@ -494,6 +504,7 @@ static void pred_temp_direct_motion(const H264Context *const h, H264SliceContext
     int b4_stride = h->b_stride;
     int mb_xy = sl->mb_xy, mb_y = sl->mb_y;
     int mb_type_col[2];
+    int col_field = 0;
     const int16_t (*l1mv0)[2], (*l1mv1)[2];
     const int8_t *l1ref0, *l1ref1;
     const int is_b8x8 = IS_8X8(*mb_type);
@@ -505,7 +516,8 @@ static void pred_temp_direct_motion(const H264Context *const h, H264SliceContext
     await_reference_mb_row(h, &sl->ref_list[1][0],
                            sl->mb_y + !!IS_INTERLACED(*mb_type));
 
-    if (IS_INTERLACED(sl->ref_list[1][0].parent->mb_type[mb_xy])) { // AFL/AFR/FR/FL -> AFL/FL
+    if (sl->ref_list[1][0].parent->field_picture ||
+        IS_INTERLACED(sl->ref_list[1][0].parent->mb_type[mb_xy])) { // AFL/AFR/FR/FL -> AFL/FL
         if (!IS_INTERLACED(*mb_type)) {                    //     AFR/FR    -> AFL/FL
             mb_y  = (sl->mb_y & ~1) + sl->col_parity;
             mb_xy = sl->mb_x +
@@ -515,6 +527,9 @@ static void pred_temp_direct_motion(const H264Context *const h, H264SliceContext
             mb_y  += sl->col_fieldoff;
             mb_xy += h->mb_stride * sl->col_fieldoff; // non-zero for FL -> FL & differ parity
         }
+        // Undecoded macroblocks of a broken field picture lack the flag, the
+        // colocated type has to agree with the branch taken here.
+        col_field = MB_TYPE_INTERLACED;
         goto single_col;
     } else {                                        // AFL/AFR/FR/FL -> AFR/FR
         if (IS_INTERLACED(*mb_type)) {              // AFL       /FL -> AFR/FR
@@ -544,7 +559,7 @@ static void pred_temp_direct_motion(const H264Context *const h, H264SliceContext
         } else {                                    //     AFR/FR    -> AFR/FR
 single_col:
             mb_type_col[0]     =
-                mb_type_col[1] = sl->ref_list[1][0].parent->mb_type[mb_xy];
+                mb_type_col[1] = sl->ref_list[1][0].parent->mb_type[mb_xy] | col_field;
 
             sub_mb_type = MB_TYPE_16x16 | MB_TYPE_P0L0 | MB_TYPE_P0L1 |
                           MB_TYPE_DIRECT2;                  /* B_SUB_8x8 */

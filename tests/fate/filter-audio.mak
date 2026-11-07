@@ -92,6 +92,12 @@ fate-filter-anequalizer: tests/data/filtergraphs/anequalizer
 fate-filter-anequalizer: SRC = $(TARGET_PATH)/tests/data/asynth-44100-2.wav
 fate-filter-anequalizer: CMD = framecrc -auto_conversion_filters -i $(SRC) -/filter_complex $(TARGET_PATH)/tests/data/filtergraphs/anequalizer
 
+FATE_AFILTER-$(call FILTERDEMDECENCMUX, AFIR ARESAMPLE ATRIM, WAV, PCM_S16LE, PCM_S16LE, WAV) += fate-filter-afir-selir
+fate-filter-afir-selir: tests/data/asynth-44100-2.wav
+fate-filter-afir-selir: SRC = $(TARGET_PATH)/tests/data/asynth-44100-2.wav
+fate-filter-afir-selir: CMD = framecrc -auto_conversion_filters -i $(SRC) -i $(SRC) -filter_complex "[1:a]atrim=end=0.05[ir];[0:a][ir]afir=ir=1[aout]" -map "[aout]" -frames:a 1
+fate-filter-afir-selir: CMP = null
+
 FATE_AFILTER-$(call FILTERDEMDECENCMUX, ASETNSAMPLES, WAV, PCM_S16LE, PCM_S16LE, WAV) += fate-filter-asetnsamples-pad
 fate-filter-asetnsamples-pad: tests/data/asynth-44100-2.wav
 fate-filter-asetnsamples-pad: SRC = $(TARGET_PATH)/tests/data/asynth-44100-2.wav
@@ -140,6 +146,12 @@ fate-filter-firequalizer: CMD = ffmpeg -auto_conversion_filters -i $(TARGET_PATH
 fate-filter-firequalizer: CMP = oneoff
 fate-filter-firequalizer: CMP_UNIT = s16
 fate-filter-firequalizer: SIZE_TOLERANCE = 1058400 - 1097208
+
+# The FIR length fits in int, but no supported RDFT length can contain it.
+FATE_AFILTER-$(call ALLYES, LAVFI_INDEV SINE_FILTER FIREQUALIZER_FILTER ARESAMPLE_FILTER PCM_S16$(if $(filter yes,$(HAVE_BIGENDIAN)),BE,LE)_DECODER PCM_S16LE_ENCODER NULL_MUXER) += fate-filter-firequalizer-large-delay
+fate-filter-firequalizer-large-delay: CMD = ! run $(FFMPEG) -nostdin -hide_banner -f lavfi -i "sine=sample_rate=48000" -af "firequalizer=delay=12500" -c:a pcm_s16le -t 0.1 -f null -
+fate-filter-firequalizer-large-delay: CMP = grep
+fate-filter-firequalizer-large-delay: REF = too large delay, please decrease it.
 
 FATE_AFILTER-$(call FILTERDEMDECENCMUX, PAN, WAV, PCM_S16LE, PCM_S16LE, WAV) += fate-filter-pan-mono1
 fate-filter-pan-mono1: tests/data/asynth-44100-2.wav

@@ -18,7 +18,7 @@ vpath %.ptx  $(SRC_PATH)
 vpath %.metal $(SRC_PATH)
 vpath %/fate_config.sh.template $(SRC_PATH)
 
-TESTTOOLS   = audiogen videogen rotozoom tiny_psnr tiny_ssim base64 audiomatch
+TESTTOOLS   = audiogen videogen rotozoom tiny_psnr tiny_ssim base64 audiomatch amrgen apnggen
 HOSTPROGS  := $(TESTTOOLS:%=tests/%) doc/print_options
 
 ALLFFLIBS =            \
@@ -46,6 +46,19 @@ SKIPHEADERS = compat/w32pthreads.h
 
 # first so "all" becomes default target
 all: all-yes
+
+# cl.exe cannot write make dependency files directly, the mscl helper
+# converts its -showIncludes output into .d files.
+MSCL := $(if $(filter -showIncludes,$(CC_DEPFLAGS) $(CXX_DEPFLAGS) $(OBJCC_DEPFLAGS) $(AS_DEPFLAGS) $(HOSTCC_DEPFLAGS)),ffbuild/mscl$(HOSTEXESUF))
+ifneq ($(MSCL),)
+MSCLCC := $(HOSTCC)
+$(foreach V,CC CXX OBJCC HOSTCC AS,\
+    $(if $(filter -showIncludes,$($(V)_DEPFLAGS)),$(eval $(V) := $(MSCL) $($(V)))))
+HOSTPROGS += ffbuild/mscl
+
+ffbuild/mscl.o: $(SRC_PATH)/compat/windows/mscl.c
+	$(MSCLCC) $(HOSTCCFLAGS) $(HOSTCC_C) $(HOSTCC_O) $<
+endif
 
 include $(SRC_PATH)/tools/Makefile
 include $(SRC_PATH)/ffbuild/common.mak
@@ -221,5 +234,5 @@ $(sort $(OUTDIRS)):
 # so this saves some time on slow systems.
 .SUFFIXES:
 
-.PHONY: all all-yes alltools build check config testprogs
+.PHONY: all all-yes alltools build check config devprogs testprogs
 .PHONY: *clean install* uninstall*

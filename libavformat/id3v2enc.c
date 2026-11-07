@@ -60,6 +60,18 @@ static void id3v2_encode_string(AVIOContext *pb, const uint8_t *str,
     put(pb, str);
 }
 
+/* ID3v2.3 frame size is not synchsafe; 2.4 is. */
+static void id3v2_put_frame_header(ID3v2EncContext *id3, AVIOContext *pb,
+                                   uint32_t tag, int len, int flags)
+{
+    avio_wb32(pb, tag);
+    if (id3->version == 3)
+        avio_wb32(pb, len);
+    else
+        id3v2_put_size(pb, len);
+    avio_wb16(pb, flags);
+}
+
 static int id3v2_put_frame(ID3v2EncContext *id3, AVIOContext *avioc, AVIOContext *dyn_buf,
                            const uint32_t tag, const uint8_t flags)
 {
@@ -67,13 +79,7 @@ static int id3v2_put_frame(ID3v2EncContext *id3, AVIOContext *avioc, AVIOContext
     uint8_t *pb;
     len = avio_get_dyn_buf(dyn_buf, &pb);
 
-    avio_wb32(avioc, tag);
-    /* ID3v2.3 frame size is not sync-safe */
-    if (id3->version == 3)
-        avio_wb32(avioc, len);
-    else
-        id3v2_put_size(avioc, len);
-    avio_wb16(avioc, flags);
+    id3v2_put_frame_header(id3, avioc, tag, len, flags);
     avio_write(avioc, pb, len);
 
     id3->len += len + ID3v2_HEADER_SIZE;
@@ -350,6 +356,7 @@ void ff_id3v2_start(ID3v2EncContext *id3, AVIOContext *pb, int id3v2_version,
                     const char *magic)
 {
     id3->version = id3v2_version;
+    id3->len = 0;
 
     avio_wb32(pb, MKBETAG(magic[0], magic[1], magic[2], id3v2_version));
     avio_w8(pb, 0);
@@ -408,7 +415,8 @@ static int write_metadata(AVIOContext *pb, AVDictionary **metadata,
     return 0;
 }
 
-static int write_ctoc(AVFormatContext *s, ID3v2EncContext *id3, int enc)
+static int write_ctoc(AVFormatContext *s, AVIOContext *pb,
+                      ID3v2EncContext *id3, int enc)
 {
     AVIOContext *dyn_bc;
     char name[123];
@@ -428,11 +436,12 @@ static int write_ctoc(AVFormatContext *s, ID3v2EncContext *id3, int enc)
         avio_put_str(dyn_bc, name);
     }
 
-    return id3v2_put_frame(id3, s->pb, dyn_bc,
+    return id3v2_put_frame(id3, pb, dyn_bc,
                            MKBETAG('C', 'T', 'O', 'C'), 0);
 }
 
-static int write_chapter(AVFormatContext *s, ID3v2EncContext *id3, int id, int enc)
+static int write_chapter(AVFormatContext *s, AVIOContext *pb,
+                         ID3v2EncContext *id3, int id, int enc)
 {
     const AVRational time_base = {1, 1000};
     AVChapter *ch = s->chapters[id];
@@ -460,10 +469,10 @@ static int write_chapter(AVFormatContext *s, ID3v2EncContext *id3, int id, int e
     len = avio_get_dyn_buf(dyn_bc, &dyn_buf);
     id3->len += 16 + ID3v2_HEADER_SIZE;
 
-    avio_wb32(s->pb, MKBETAG('C', 'H', 'A', 'P'));
-    avio_wb32(s->pb, len);
-    avio_wb16(s->pb, 0);
-    avio_write(s->pb, dyn_buf, len);
+    /* Nested frames already updated id3->len, so this header is written
+     * directly instead of through id3v2_put_frame(). */
+    id3v2_put_frame_header(id3, pb, MKBETAG('C', 'H', 'A', 'P'), len, 0);
+    avio_write(pb, dyn_buf, len);
 
 fail:
     ffio_free_dyn_buf(&dyn_bc);
@@ -471,28 +480,30 @@ fail:
     return ret;
 }
 
-int ff_id3v2_write_metadata(AVFormatContext *s, ID3v2EncContext *id3)
+int ff_id3v2_write_metadata(AVFormatContext *s, AVIOContext *pb,
+                            ID3v2EncContext *id3)
 {
     int enc = id3->version == 3 ? ID3v2_ENCODING_UTF16BOM :
                                   ID3v2_ENCODING_UTF8;
     int i, ret;
 
     ff_standardize_creation_time(s);
-    if ((ret = write_metadata(s->pb, &s->metadata, id3, enc)) < 0)
+    if ((ret = write_metadata(pb, &s->metadata, id3, enc)) < 0)
         return ret;
 
-    if ((ret = write_ctoc(s, id3, enc)) < 0)
+    if ((ret = write_ctoc(s, pb, id3, enc)) < 0)
         return ret;
 
     for (i = 0; i < s->nb_chapters; i++) {
-        if ((ret = write_chapter(s, id3, i, enc)) < 0)
+        if ((ret = write_chapter(s, pb, id3, i, enc)) < 0)
             return ret;
     }
 
     return 0;
 }
 
-int ff_id3v2_write_apic(AVFormatContext *s, ID3v2EncContext *id3, AVPacket *pkt)
+int ff_id3v2_write_apic(AVFormatContext *s, AVIOContext *pb,
+                        ID3v2EncContext *id3, AVPacket *pkt)
 {
     AVStream *st = s->streams[pkt->stream_index];
     AVDictionaryEntry *e;
@@ -545,7 +556,7 @@ int ff_id3v2_write_apic(AVFormatContext *s, ID3v2EncContext *id3, AVPacket *pkt)
     id3v2_encode_string(dyn_buf, desc, enc);
     avio_write(dyn_buf, pkt->data, pkt->size);
 
-    return id3v2_put_frame(id3, s->pb, dyn_buf,
+    return id3v2_put_frame(id3, pb, dyn_buf,
                            MKBETAG('A', 'P', 'I', 'C'), 0);
 }
 
@@ -580,7 +591,7 @@ int ff_id3v2_write_simple(struct AVFormatContext *s, int id3v2_version,
     int ret;
 
     ff_id3v2_start(&id3, s->pb, id3v2_version, magic);
-    if ((ret = ff_id3v2_write_metadata(s, &id3)) < 0)
+    if ((ret = ff_id3v2_write_metadata(s, s->pb, &id3)) < 0)
         return ret;
     ff_id3v2_finish(&id3, s->pb, s->metadata_header_padding);
 

@@ -72,7 +72,7 @@ int stdin_interaction = 1;
 float max_error_rate  = 2.0/3;
 char *filter_nbthreads;
 int filter_complex_nbthreads = 0;
-int filter_buffered_frames = 0;
+int filter_buffered_frames[AVMEDIA_TYPE_NB] = {0};
 int vstats_version = 2;
 int print_graphs = 0;
 char *print_graphs_file = NULL;
@@ -464,6 +464,37 @@ static int opt_filter_threads(void *optctx, const char *opt, const char *arg)
 {
     av_free(filter_nbthreads);
     filter_nbthreads = av_strdup(arg);
+    return 0;
+}
+
+static int opt_filter_buffered_frames(void *optctx, const char *opt, const char *arg)
+{
+    enum AVMediaType type;
+    const char *suffix = strchr(opt, ':');
+    suffix = suffix ? suffix + 1 : NULL;
+    if (!suffix)
+        type = AVMEDIA_TYPE_UNKNOWN;
+    else if (!strcmp(suffix, "a"))
+        type = AVMEDIA_TYPE_AUDIO;
+    else if (!strcmp(suffix, "v"))
+        type = AVMEDIA_TYPE_VIDEO;
+    else {
+        av_log(NULL, AV_LOG_ERROR, "Invalid media type '%s' for option '%s', "
+               "expected 'a' or 'v'.\n", suffix, opt);
+        return AVERROR(EINVAL);
+    }
+
+    double num;
+    int ret = parse_number(opt, arg, OPT_TYPE_INT, 0, INT_MAX, &num);
+    if (ret < 0)
+        return ret;
+
+    if (type != AVMEDIA_TYPE_UNKNOWN) {
+        filter_buffered_frames[type] = num;
+    } else {
+        for (int i = 0; i < AVMEDIA_TYPE_NB; i++)
+            filter_buffered_frames[i] = num;
+    }
     return 0;
 }
 
@@ -1746,9 +1777,9 @@ const OptionDef options[] = {
     { "filter_threads",         OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
         { .func_arg = opt_filter_threads },
         "number of non-complex filter threads" },
-    { "filter_buffered_frames", OPT_TYPE_INT, OPT_EXPERT,
-        { &filter_buffered_frames },
-        "maximum number of buffered frames in a filter graph" },
+    { "filter_buffered_frames", OPT_TYPE_FUNC, OPT_FUNC_ARG | OPT_EXPERT,
+        { .func_arg = opt_filter_buffered_frames },
+        "maximum number of buffered audio/video frames in a filter graph", "nb_frames" },
     { "reinit_filter",          OPT_TYPE_INT, OPT_PERSTREAM | OPT_INPUT | OPT_EXPERT,
         { .off = OFFSET(reinit_filters) },
         "reinit filtergraph on input parameter changes", "" },
@@ -1802,9 +1833,9 @@ const OptionDef options[] = {
     { "disposition",         OPT_TYPE_STRING, OPT_PERSTREAM | OPT_OUTPUT | OPT_EXPERT,
         { .off = OFFSET(disposition) },
         "disposition", "" },
-    { "thread_queue_size",   OPT_TYPE_INT,  OPT_OFFSET | OPT_EXPERT | OPT_INPUT | OPT_OUTPUT,
+    { "thread_queue_size",   OPT_TYPE_INT,  OPT_OFFSET | OPT_EXPERT | OPT_OUTPUT,
         { .off = OFFSET(thread_queue_size) },
-        "set the maximum number of queued packets from the demuxer" },
+        "set the maximum number of queued packets per stream on the muxer" },
     { "find_stream_info",    OPT_TYPE_BOOL, OPT_INPUT | OPT_EXPERT | OPT_OFFSET,
         { .off = OFFSET(find_stream_info) },
         "read and decode the streams to fill missing information with heuristics" },
@@ -1831,6 +1862,11 @@ const OptionDef options[] = {
         { .off = OFFSET(mux_stats_fmt)      },
         "format of the stats written with -stats_mux_pre" },
 
+    { "reinit_opts",        OPT_TYPE_STRING, OPT_PERSTREAM | OPT_EXPERT | OPT_OUTPUT,
+        { .off = OFFSET(enc_reinit_opts) },
+        "List of encoder options to use to reinitialize the encoder at given timestamps",
+        "pts1|video_size=size:g=12,pts2|video_size=size..." },
+
     /* video options */
     { "vframes",                    OPT_TYPE_FUNC,   OPT_VIDEO | OPT_FUNC_ARG | OPT_PERFILE | OPT_OUTPUT | OPT_EXPERT | OPT_HAS_CANON,
         { .func_arg = opt_video_frames },
@@ -1848,6 +1884,9 @@ const OptionDef options[] = {
     { "aspect",                     OPT_TYPE_STRING, OPT_VIDEO | OPT_PERSTREAM | OPT_OUTPUT,
         { .off = OFFSET(frame_aspect_ratios) },
         "set aspect ratio (4:3, 16:9 or 1.3333, 1.7777)", "aspect" },
+    { "stereo3d",                   OPT_TYPE_STRING, OPT_VIDEO | OPT_PERSTREAM | OPT_OUTPUT,
+        { .off = OFFSET(stereo3ds) },
+        "set stereoscopic 3D layout metadata (does not rearrange pixels)", "layout" },
     { "pix_fmt",                    OPT_TYPE_STRING, OPT_VIDEO | OPT_EXPERT | OPT_PERSTREAM | OPT_INPUT | OPT_OUTPUT,
         { .off = OFFSET(frame_pix_fmts) },
         "set pixel format", "format" },

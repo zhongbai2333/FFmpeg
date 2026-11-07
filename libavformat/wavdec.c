@@ -370,11 +370,13 @@ static int wav_read_header(AVFormatContext *s)
     WAVDemuxContext *wav = s->priv_data;
     int ret, got_fmt = 0, got_xma2 = 0;
     int64_t next_tag_ofs, data_ofs = -1;
+    int64_t filesize;
 
     wav->unaligned = avio_tell(s->pb) & 1;
 
     wav->smv_data_ofs = -1;
 
+    filesize = avio_size(pb);
     /* read chunk ID */
     tag = avio_rl32(pb);
     switch (tag) {
@@ -466,7 +468,7 @@ static int wav_read_header(AVFormatContext *s)
 
             if (rf64 || bw64) {
                 wav->data_end = av_sat_add64(avio_tell(pb), data_size);
-                next_tag_ofs = wav->data_end + (data_size & 1);
+                next_tag_ofs = av_sat_add64(wav->data_end, data_size & 1);
             } else if (size > 0 && size != 0xFFFFFFFF) {
                 data_size    = size;
                 wav->data_end = avio_tell(pb) + size;
@@ -661,7 +663,7 @@ break_loop:
         if (   st->codecpar->ch_layout.nb_channels
             && data_size
             && av_get_bits_per_sample(st->codecpar->codec_id)
-            && wav->data_end <= avio_size(pb))
+            && wav->data_end <= filesize)
             sample_count = (data_size << 3)
                                   /
                 (st->codecpar->ch_layout.nb_channels * (uint64_t)av_get_bits_per_sample(st->codecpar->codec_id));

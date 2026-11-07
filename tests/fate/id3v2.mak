@@ -18,6 +18,11 @@ fate-id3v2-keep-metadata-invalid-stream-spec: REF = Trailing garbage at the end 
 FATE_ID3V2_FFMPEG_FFPROBE-$(call REMUX, MP3) += fate-id3v2-priv-remux
 fate-id3v2-priv-remux: CMD = transcode mp3 $(TARGET_SAMPLES)/id3v2/id3v2_priv.mp3 mp3 "-c copy" "-c copy -t 0.1" "-show_entries format_tags"
 
+FATE_ID3V2_FFMPEG-$(call ALLYES, MP3_DEMUXER MP3_MUXER MD5_PROTOCOL) += fate-id3v2-padding-nonseekable
+fate-id3v2-padding-nonseekable: CMD = md5pipe -i $(TARGET_SAMPLES)/exif/embedded_small.mp3 -map 0:a -map_metadata -1 -metadata title=padding-test -c copy -fflags +bitexact -write_xing 0 -metadata_header_padding 40000 -f mp3
+fate-id3v2-padding-nonseekable: CMP = oneline
+fate-id3v2-padding-nonseekable: REF = 6a53649febb6345d3752445dcd3f3159
+
 ID3V2_TESTBIN = libavformat/tests/id3v2$(EXESUF)
 
 FATE_ID3V2_RAW-$(call REMUX, MP3) += fate-id3v2-comm
@@ -76,9 +81,6 @@ fate-id3v2-utf16-bom: CMD = transcode wav $(TARGET_SAMPLES)/audio-reference/yo.r
 # MusicMatch tools embed artist bio etc. as COMM frames with a descriptor.
 FATE_ID3V2_FFPROBE-$(CONFIG_ASF_DEMUXER) += fate-id3v2-wma-comm
 fate-id3v2-wma-comm: CMD = probetags $(TARGET_SAMPLES)/cover_art/wma_with_ID3_APIC_trimmed.wma
-
-FATE_ID3V2_FFPROBE-$(CONFIG_ASF_O_DEMUXER) += fate-id3v2-wma-comm-asf_o
-fate-id3v2-wma-comm-asf_o: CMD = probetags -f asf_o $(TARGET_SAMPLES)/cover_art/wma_with_ID3_APIC_trimmed.wma
 
 # Same file with the deprecated descriptor-as-key export enabled.
 FATE_ID3V2_FFPROBE-$(CONFIG_ASF_DEMUXER) += fate-id3v2-wma-comm-legacy-keys

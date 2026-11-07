@@ -46,6 +46,7 @@
 #include "macros.h"
 #include "mem.h"
 #include "mem_internal.h"
+#include "sanitizer.h"
 
 #ifdef MALLOC_PREFIX
 
@@ -66,6 +67,100 @@ void  free(void *ptr);
 #define ALIGN (HAVE_SIMD_ALIGN_64 ? 64 : (HAVE_SIMD_ALIGN_32 ? 32 : 16))
 
 #define FF_MEMORY_POISON 0x2a
+
+static void poison_memory(void *ptr, size_t size)
+{
+#if CONFIG_MEMORY_POISONING
+    memset(ptr, FF_MEMORY_POISON, size);
+#endif
+    FF_MEM_UNDEFINED(ptr, size);
+}
+
+/* The LLVM ASan runtime for Windows does not intercept the _aligned_malloc
+ * family, so the alignment slack around a block stays addressable and small
+ * overflows go unnoticed, while the runtime shipped with Visual Studio does
+ * intercept it. Which one is linked cannot be told at compile time, so probe
+ * once whether the byte after an aligned allocation is poisoned and align by
+ * hand only when it is not. */
+#if HAVE_ASAN && HAVE_ALIGNED_MALLOC && !HAVE_POSIX_MEMALIGN && !HAVE_MEMALIGN
+#define ASAN_ALIGNED_ALLOC 1
+
+static int asan_aligned_alloc_needed(void)
+{
+    static atomic_int needed = -1;
+    int ret = atomic_load_explicit(&needed, memory_order_relaxed);
+
+    if (ret < 0) {
+        uint8_t *p = _aligned_malloc(16, ALIGN);
+        int probed = !p || !__asan_address_is_poisoned(p + 16);
+        _aligned_free(p);
+        /* Every block must be freed by the allocator that made it, so the
+         * first probe to finish decides for all callers. */
+        if (atomic_compare_exchange_strong_explicit(&needed, &ret, probed,
+                                                    memory_order_relaxed,
+                                                    memory_order_relaxed))
+            ret = probed;
+    }
+    return ret;
+}
+
+typedef struct AsanAlignedHeader {
+    void  *base;
+    size_t size;
+} AsanAlignedHeader;
+
+static void *asan_aligned_malloc(size_t size)
+{
+    AsanAlignedHeader *hdr;
+    uint8_t *base, *ptr;
+    size_t total;
+
+    if (size > SIZE_MAX - ALIGN - sizeof(*hdr))
+        return NULL;
+    total = size + ALIGN + sizeof(*hdr);
+    base  = malloc(total);
+    if (!base)
+        return NULL;
+    ptr = (uint8_t *)FFALIGN((uintptr_t)base + sizeof(*hdr), ALIGN);
+    hdr = (AsanAlignedHeader *)ptr - 1;
+    hdr->base = base;
+    hdr->size = size;
+    FF_ASAN_POISON(base, ptr - base);
+    FF_ASAN_POISON(ptr + size, base + total - (ptr + size));
+    return ptr;
+}
+
+static AsanAlignedHeader *asan_aligned_header(void *ptr)
+{
+    AsanAlignedHeader *hdr = (AsanAlignedHeader *)ptr - 1;
+    FF_ASAN_UNPOISON(hdr, sizeof(*hdr));
+    return hdr;
+}
+
+static void asan_aligned_free(void *ptr)
+{
+    if (ptr)
+        free(asan_aligned_header(ptr)->base);
+}
+
+static void *asan_aligned_realloc(void *ptr, size_t size)
+{
+    AsanAlignedHeader *hdr;
+    void *ret;
+
+    if (!ptr)
+        return asan_aligned_malloc(size);
+    ret = asan_aligned_malloc(size);
+    if (!ret)
+        return NULL;
+    hdr = asan_aligned_header(ptr);
+    memcpy(ret, ptr, FFMIN(size, hdr->size));
+    free(hdr->base);
+    return ret;
+}
+#else
+#define ASAN_ALIGNED_ALLOC 0
+#endif
 
 /* NOTE: if you want to override these functions with your own
  * implementations (not recommended) you have to link libav* as
@@ -121,16 +216,18 @@ void ff_memory_d3d11_free(size_t textures, size_t surfaces, size_t logical_bytes
     stats_sub(AV_MEMORY_STAT_D3D11_LOGICAL_BYTES_CURRENT, logical_bytes);
 }
 
-static size_t allocation_size(const void *ptr)
+static size_t allocation_size(const void *base)
 {
     size_t size;
-    memcpy(&size, (const uint8_t *)ptr - ALIGN, sizeof(size));
+    memcpy(&size, base, sizeof(size));
     return size;
 }
 
 static void store_allocation_size(void *base, size_t size)
 {
     memcpy(base, &size, sizeof(size));
+    /* Keep the statistics header inside the allocation's left redzone. */
+    FF_ASAN_POISON(base, ALIGN);
 }
 
 void av_max_alloc(size_t max){
@@ -167,7 +264,12 @@ void *av_malloc(size_t size)
         return NULL;
     total = backend_size + ALIGN;
 
-#if HAVE_POSIX_MEMALIGN
+#if ASAN_ALIGNED_ALLOC
+    if (asan_aligned_alloc_needed())
+        base = asan_aligned_malloc(total);
+    else
+        base = _aligned_malloc(total, ALIGN);
+#elif HAVE_POSIX_MEMALIGN
     if (posix_memalign(&base, ALIGN, total))
         base = NULL;
 #elif HAVE_ALIGNED_MALLOC
@@ -211,9 +313,7 @@ void *av_malloc(size_t size)
     ptr = (uint8_t *)base + ALIGN;
     stats_add(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, AV_MEMORY_STAT_HEAP_PEAK_BYTES, size);
     atomic_fetch_add_explicit(&memory_stats[AV_MEMORY_STAT_ALLOCATIONS], 1, memory_order_relaxed);
-#if CONFIG_MEMORY_POISONING
-    memset(ptr, FF_MEMORY_POISON, size);
-#endif
+    poison_memory(ptr, size);
     return ptr;
 }
 
@@ -221,7 +321,8 @@ void *av_realloc(void *ptr, size_t size)
 {
     void *base = ptr ? (uint8_t *)ptr - ALIGN : NULL;
     void *ret_base;
-    size_t old_size = ptr ? allocation_size(ptr) : 0;
+    const int new_allocation = !ptr;
+    size_t old_size = 0;
     size_t backend_size = size ? size : 1;
     size_t total;
     if (size > atomic_load_explicit(&max_alloc_size, memory_order_relaxed) ||
@@ -229,13 +330,26 @@ void *av_realloc(void *ptr, size_t size)
         return NULL;
     total = backend_size + ALIGN;
 
-#if HAVE_ALIGNED_MALLOC
+    if (base) {
+        FF_ASAN_UNPOISON(base, ALIGN);
+        old_size = allocation_size(base);
+    }
+
+#if ASAN_ALIGNED_ALLOC
+    if (asan_aligned_alloc_needed())
+        ret_base = asan_aligned_realloc(base, total);
+    else
+        ret_base = _aligned_realloc(base, total, ALIGN);
+#elif HAVE_ALIGNED_MALLOC
     ret_base = _aligned_realloc(base, total, ALIGN);
 #else
     ret_base = realloc(base, total);
 #endif
-    if (!ret_base)
+    if (!ret_base) {
+        if (base)
+            FF_ASAN_POISON(base, ALIGN);
         return NULL;
+    }
     store_allocation_size(ret_base, size);
     if (size >= old_size)
         stats_add(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, AV_MEMORY_STAT_HEAP_PEAK_BYTES,
@@ -243,11 +357,10 @@ void *av_realloc(void *ptr, size_t size)
     else
         stats_sub(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, old_size - size);
     atomic_fetch_add_explicit(&memory_stats[AV_MEMORY_STAT_REALLOCATIONS], 1, memory_order_relaxed);
-#if CONFIG_MEMORY_POISONING
-    if (!ptr)
-        memset((uint8_t *)ret_base + ALIGN, FF_MEMORY_POISON, size);
-#endif
-    return (uint8_t *)ret_base + ALIGN;
+    ptr = (uint8_t *)ret_base + ALIGN;
+    if (new_allocation)
+        poison_memory(ptr, size);
+    return ptr;
 }
 
 void *av_realloc_f(void *ptr, size_t nelem, size_t elsize)
@@ -321,11 +434,17 @@ void av_free(void *ptr)
     size_t size;
     if (!ptr)
         return;
-    size = allocation_size(ptr);
     base = (uint8_t *)ptr - ALIGN;
+    FF_ASAN_UNPOISON(base, ALIGN);
+    size = allocation_size(base);
     stats_sub(AV_MEMORY_STAT_HEAP_CURRENT_BYTES, size);
     atomic_fetch_add_explicit(&memory_stats[AV_MEMORY_STAT_FREES], 1, memory_order_relaxed);
-#if HAVE_ALIGNED_MALLOC
+#if ASAN_ALIGNED_ALLOC
+    if (asan_aligned_alloc_needed())
+        asan_aligned_free(base);
+    else
+        _aligned_free(base);
+#elif HAVE_ALIGNED_MALLOC
     _aligned_free(base);
 #else
     free(base);
@@ -435,8 +554,8 @@ void *av_dynarray2_add(void **tab_ptr, int *nb_ptr, size_t elem_size,
         tab_elem_data = (uint8_t *)*tab_ptr + (*nb_ptr) * elem_size;
         if (elem_data)
             memcpy(tab_elem_data, elem_data, elem_size);
-        else if (CONFIG_MEMORY_POISONING)
-            memset(tab_elem_data, FF_MEMORY_POISON, elem_size);
+        else
+            poison_memory(tab_elem_data, elem_size);
     }, {
         av_freep(tab_ptr);
         *nb_ptr = 0;

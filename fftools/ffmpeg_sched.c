@@ -32,7 +32,6 @@
 #include "libavcodec/packet.h"
 
 #include "libavutil/avassert.h"
-#include "libavutil/container_fifo.h"
 #include "libavutil/error.h"
 #include "libavutil/fifo.h"
 #include "libavutil/frame.h"
@@ -87,7 +86,6 @@ typedef struct SchDec {
     unsigned         nb_outputs;
 
     SchTask             task;
-    SchWaiter           waiter;
     // Queue for receiving input packets, one stream.
     ThreadQueue        *queue;
 
@@ -97,9 +95,6 @@ typedef struct SchDec {
 
     // temporary storage used by sch_dec_send()
     AVFrame            *send_frame;
-
-    // internal queue of undecoded packets used by sch_dec_receive()
-    AVContainerFifo    *overflow;
 } SchDec;
 
 typedef struct SchSyncQueue {
@@ -203,12 +198,22 @@ typedef struct SchMuxStream {
     // an EOF was generated while flushing the pre-mux queue
     int                 init_eof;
 
+    // offset (in AV_TIME_BASE_Q) subtracted by the upstream pipeline
+    // (e.g. filter ts_offset), added back when computing last_dts_paced
+    // so that cross-stream pacing compares on a common source timeline
+    int64_t             dts_pacing_offset;
+
     ////////////////////////////////////////////////////////////
     // The following are protected by Scheduler.schedule_lock //
 
     /* dts+duration of the last packet sent to this stream
-       in AV_TIME_BASE_Q */
+       in AV_TIME_BASE_Q, as observed by the muxer (no offset applied);
+       feeds progressing_dts() -> sch->last_dts -> CLI progress display */
     int64_t             last_dts;
+    /* last_dts + dts_pacing_offset, kept on a common source timeline
+       across streams; consumed by trailing_dts() and the choke check
+       in schedule_update_locked() */
+    int64_t             last_dts_paced;
     // this stream no longer accepts input
     int                 source_finished;
     ////////////////////////////////////////////////////////////
@@ -452,10 +457,10 @@ static int64_t trailing_dts(const Scheduler *sch)
 
             if (ms->source_finished)
                 continue;
-            if (ms->last_dts == AV_NOPTS_VALUE)
+            if (ms->last_dts_paced == AV_NOPTS_VALUE)
                 return AV_NOPTS_VALUE;
 
-            min_dts = FFMIN(min_dts, ms->last_dts);
+            min_dts = FFMIN(min_dts, ms->last_dts_paced);
         }
     }
 
@@ -553,7 +558,6 @@ void sch_free(Scheduler **psch)
         tq_free(&dec->queue);
 
         av_thread_message_queue_free(&dec->queue_end_ts);
-        av_container_fifo_free(&dec->overflow);
 
         for (unsigned j = 0; j < dec->nb_outputs; j++) {
             SchDecOutput *o = &dec->outputs[j];
@@ -565,8 +569,6 @@ void sch_free(Scheduler **psch)
         av_freep(&dec->outputs);
 
         av_frame_free(&dec->send_frame);
-
-        waiter_uninit(&dec->waiter);
     }
     av_freep(&sch->dec);
 
@@ -712,7 +714,8 @@ int sch_add_mux_stream(Scheduler *sch, unsigned mux_idx)
     if (!ms->pre_mux_queue.fifo)
         return AVERROR(ENOMEM);
 
-    ms->last_dts = AV_NOPTS_VALUE;
+    ms->last_dts       = AV_NOPTS_VALUE;
+    ms->last_dts_paced = AV_NOPTS_VALUE;
 
     return stream_idx;
 }
@@ -816,14 +819,6 @@ int sch_add_dec(Scheduler *sch, SchThreadFunc func, void *ctx, int send_end_ts)
         if (ret < 0)
             return ret;
     }
-
-    dec->overflow = av_container_fifo_alloc_avpacket(0);
-    if (!dec->overflow)
-        return AVERROR(ENOMEM);
-
-    ret = waiter_init(&dec->waiter);
-    if (ret < 0)
-        return ret;
 
     return idx;
 }
@@ -1264,6 +1259,21 @@ void sch_mux_stream_buffering(Scheduler *sch, unsigned mux_idx, unsigned stream_
     ms->pre_mux_queue.data_threshold = data_threshold;
 }
 
+void sch_mux_stream_set_dts_pacing_offset(Scheduler *sch, unsigned mux_idx,
+                                          unsigned stream_idx, int64_t offset)
+{
+    SchMux       *mux;
+    SchMuxStream *ms;
+
+    av_assert0(mux_idx < sch->nb_mux);
+    mux = &sch->mux[mux_idx];
+
+    av_assert0(stream_idx < mux->nb_streams);
+    ms = &mux->streams[stream_idx];
+
+    ms->dts_pacing_offset = offset;
+}
+
 int sch_mux_stream_ready(Scheduler *sch, unsigned mux_idx, unsigned stream_idx)
 {
     SchMux *mux;
@@ -1321,9 +1331,8 @@ int sch_mux_sub_heartbeat_add(Scheduler *sch, unsigned mux_idx, unsigned stream_
 enum {
     UNCHOKE_DEMUX  = (1 << 0),
     UNCHOKE_FILTER = (1 << 1),
-    UNCHOKE_DECODE = (1 << 2),
 
-    UNCHOKE_ALL = UNCHOKE_DEMUX | UNCHOKE_FILTER | UNCHOKE_DECODE,
+    UNCHOKE_ALL = UNCHOKE_DEMUX | UNCHOKE_FILTER,
 };
 
 static void unchoke_for_stream(Scheduler *sch, SchedulerNode src, int flags);
@@ -1338,10 +1347,8 @@ static void unchoke_downstream(Scheduler *sch, SchedulerNode *dst)
     switch (dst->type) {
     case SCH_NODE_TYPE_DEC:
         dec = &sch->dec[dst->idx];
-        if (!dec->waiter.choked_next) {
-            for (int i = 0; i < dec->nb_outputs; i++)
-                unchoke_downstream(sch, dec->outputs[i].dst);
-        }
+        for (int i = 0; i < dec->nb_outputs; i++)
+            unchoke_downstream(sch, dec->outputs[i].dst);
         break;
     case SCH_NODE_TYPE_ENC:
         enc = &sch->enc[dst->idx];
@@ -1372,7 +1379,6 @@ static void unchoke_for_stream(Scheduler *sch, SchedulerNode src, int flags)
     while (1) {
         SchFilterGraph *fg;
         SchDemux *demux;
-        SchDec *dec;
         switch (src.type) {
         case SCH_NODE_TYPE_DEMUX:
             // fed directly by a demuxer (i.e. not through a filtergraph)
@@ -1386,11 +1392,7 @@ static void unchoke_for_stream(Scheduler *sch, SchedulerNode src, int flags)
             }
             return;
         case SCH_NODE_TYPE_DEC:
-            dec = &sch->dec[src.idx];
-            if (!(flags & UNCHOKE_DECODE))
-                return;
-            dec->waiter.choked_next = 0;
-            src = dec->src;
+            src = sch->dec[src.idx].src;
             continue;
         case SCH_NODE_TYPE_ENC:
             src = sch->enc[src.idx].src;
@@ -1469,7 +1471,6 @@ static void schedule_update_locked(Scheduler *sch)
 
     RESET_WAITER(demux);
     RESET_WAITER(filters);
-    RESET_WAITER(dec);
 
     // figure out the sources that are allowed to proceed
     for (unsigned i = 0; i < sch->nb_mux; i++) {
@@ -1480,14 +1481,11 @@ static void schedule_update_locked(Scheduler *sch)
 
             // unblock sources for output streams that are not finished
             // and not too far ahead of the trailing stream
-            if (ms->source_finished) {
-                // still allow decoders to drain
-                unchoke_for_stream(sch, ms->src, UNCHOKE_DECODE);
+            if (ms->source_finished)
                 continue;
-            }
-            if (dts == AV_NOPTS_VALUE && ms->last_dts != AV_NOPTS_VALUE)
+            if (dts == AV_NOPTS_VALUE && ms->last_dts_paced != AV_NOPTS_VALUE)
                 continue;
-            if (dts != AV_NOPTS_VALUE && ms->last_dts - dts >= SCHEDULE_TOLERANCE)
+            if (dts != AV_NOPTS_VALUE && ms->last_dts_paced - dts >= SCHEDULE_TOLERANCE)
                 continue;
 
             // resolve the source to unchoke
@@ -1538,7 +1536,6 @@ static void schedule_update_locked(Scheduler *sch)
 
     UPDATE_WAITER(demux);
     UPDATE_WAITER(filters);
-    UPDATE_WAITER(dec);
 }
 
 enum {
@@ -2082,8 +2079,12 @@ update_schedule:
     if (dts != AV_NOPTS_VALUE || !pkt) {
         pthread_mutex_lock(&sch->schedule_lock);
 
-        if (pkt) ms->last_dts = dts;
-        else     ms->source_finished = 1;
+        if (pkt) {
+            ms->last_dts       = dts;
+            ms->last_dts_paced = dts + ms->dts_pacing_offset;
+        } else {
+            ms->source_finished = 1;
+        }
 
         schedule_update_locked(sch);
 
@@ -2341,12 +2342,6 @@ int sch_dec_receive(Scheduler *sch, unsigned dec_idx, AVPacket *pkt)
     av_assert0(dec_idx < sch->nb_dec);
     dec = &sch->dec[dec_idx];
 
-retry:
-    // Pull a packet from the overflow FIFO while unchoked or expecting EOF ts
-    if (av_container_fifo_can_read(dec->overflow) &&
-        (!atomic_load(&dec->waiter.choked) || dec->expect_end_ts))
-        return av_container_fifo_read(dec->overflow, pkt, 0);
-
     // the decoder should have given us post-flush end timestamp in pkt
     if (dec->expect_end_ts) {
         Timestamp ts = (Timestamp){ .ts = pkt->pts, .tb = pkt->time_base };
@@ -2360,28 +2355,10 @@ retry:
     ret = tq_receive(dec->queue, &dummy, pkt, 0);
     av_assert0(dummy <= 0);
 
-    // drain packets from overflow queue before returning EOF
-    if (ret == AVERROR_EOF && av_container_fifo_can_read(dec->overflow)) {
-        int terminate = waiter_wait(sch, &dec->waiter);
-        if (terminate)
-            return ret;
-        return av_container_fifo_read(dec->overflow, pkt, 0);
-    } else if (ret < 0)
-        return ret;
-
     // got a flush packet, on the next call to this function the decoder
-    // should give us post-flush end timestamp (after draining overflow fifo)
-    if (!pkt->data && !pkt->side_data_elems && dec->queue_end_ts)
+    // will give us post-flush end timestamp
+    if (ret >= 0 && !pkt->data && !pkt->side_data_elems && dec->queue_end_ts)
         dec->expect_end_ts = 1;
-
-    // we got a packet, but we're currently choked or have existing overflow
-    // packets; so push it to the FIFO first
-    if (atomic_load(&dec->waiter.choked) || av_container_fifo_can_read(dec->overflow)) {
-        ret = av_container_fifo_write(dec->overflow, pkt, 0);
-        if (ret < 0)
-            return ret;
-        goto retry;
-    }
 
     return ret;
 }
@@ -2840,9 +2817,6 @@ int sch_stop(Scheduler *sch, int64_t *finish_ts)
             if (type)
                 choke_demux(sch, i, 0); // unfreeze to allow draining
         }
-
-    for (unsigned i = 0; i < sch->nb_dec; i++)
-        waiter_set(&sch->dec[i].waiter, 0); // unfreeze to allow draining
 
     pthread_mutex_unlock(&sch->schedule_lock);
 

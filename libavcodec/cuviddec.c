@@ -152,16 +152,17 @@ static int cuvid_get_requested_hw_format(AVCodecContext *avctx, CuvidContext *ct
 {
     enum AVPixelFormat requested = ctx->output_format;
 
-    if (requested == AV_PIX_FMT_NONE)
-        requested = AV_PIX_FMT_CUDA;
-
-    if (ctx->zero_copy && requested != AV_PIX_FMT_CUARRAY) {
-        av_log(avctx, AV_LOG_WARNING,
-               "zero_copy requires cuarray output format; "
-               "overriding -output_format %s -> cuarray\n",
-               av_get_pix_fmt_name(requested) ? av_get_pix_fmt_name(requested) : "unknown");
+    if (ctx->zero_copy) {
+        if (requested != AV_PIX_FMT_NONE && requested != AV_PIX_FMT_CUARRAY)
+            av_log(avctx, AV_LOG_WARNING,
+                   "zero_copy requires cuarray output format; "
+                   "overriding -output_format %s -> cuarray\n",
+                   av_get_pix_fmt_name(requested) ? av_get_pix_fmt_name(requested) : "unknown");
         requested = AV_PIX_FMT_CUARRAY;
     }
+
+    if (requested == AV_PIX_FMT_NONE)
+        requested = AV_PIX_FMT_CUDA;
 
     switch (requested) {
     case AV_PIX_FMT_CUDA:
@@ -183,6 +184,26 @@ static int cuvid_get_requested_hw_format(AVCodecContext *avctx, CuvidContext *ct
 
     *fmt = requested;
     return 0;
+}
+
+static int cuvid_output_format_is_forced(const CuvidContext *ctx)
+{
+    return ctx->zero_copy || ctx->output_format != AV_PIX_FMT_NONE;
+}
+
+static enum AVPixelFormat cuvid_apply_forced_output_format(AVCodecContext *avctx,
+                                                           const CuvidContext *ctx,
+                                                           enum AVPixelFormat selected,
+                                                           enum AVPixelFormat requested)
+{
+    if (cuvid_output_format_is_forced(ctx) && selected != requested) {
+        av_log(avctx, AV_LOG_VERBOSE,
+               "ff_get_format returned %s, overriding to explicitly requested %s\n",
+               av_get_pix_fmt_name(selected), av_get_pix_fmt_name(requested));
+        selected = requested;
+    }
+
+    return selected;
 }
 
 static void cuvid_prepare_format_list(enum AVPixelFormat *pix_fmts,
@@ -245,6 +266,37 @@ static void cuvid_decoder_cleanup_free(void *opaque, uint8_t *data)
 
 #endif
 
+static int cuvid_destroy_decoder(AVCodecContext *avctx)
+{
+    CuvidContext *ctx = avctx->priv_data;
+    int ret = 0;
+
+#ifdef NVDEC_HAVE_OPAQUE_OUTPUT_SUPPORT
+    if (ctx->decoder_cleanup) {
+        ctx->decoder_cleanup->cudecoder            = ctx->cudecoder;
+        ctx->decoder_cleanup->cuarray_surfaces     = ctx->cuarray_surfaces;
+        ctx->decoder_cleanup->cuarray_num_surfaces = ctx->cuarray_num_surfaces;
+        ctx->decoder_cleanup = NULL;
+    } else {
+        if (ctx->cudecoder)
+            ret = CHECK_CU(ctx->cvdl->cuvidDestroyDecoder(ctx->cudecoder));
+        for (int i = 0; i < ctx->cuarray_num_surfaces; i++)
+            CHECK_CU(ctx->cudl->cuArrayDestroy(ctx->cuarray_surfaces[i]));
+        av_freep(&ctx->cuarray_surfaces);
+    }
+    ctx->cuarray_surfaces     = NULL;
+    ctx->cuarray_num_surfaces = 0;
+    av_buffer_unref(&ctx->surface_in_use_ref);
+    ctx->surface_in_use = NULL;
+#else
+    if (ctx->cudecoder)
+        ret = CHECK_CU(ctx->cvdl->cuvidDestroyDecoder(ctx->cudecoder));
+#endif
+    ctx->cudecoder = NULL;
+
+    return ret;
+}
+
 static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* format)
 {
     AVCodecContext *avctx = opaque;
@@ -254,8 +306,9 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
     CUVIDDECODECREATEINFO cuinfo;
     int surface_fmt;
     int chroma_444;
-    int old_nb_surfaces, fifo_size_inc, fifo_size_mul = 1;
-    enum AVPixelFormat requested_hw_format;
+    int old_nb_surfaces, old_opaque_output = ctx->opaque_output;
+    int fifo_size_inc, fifo_size_mul = 1;
+    enum AVPixelFormat requested_hw_format, internal_hw_format;
 
     int old_width = avctx->width;
     int old_height = avctx->height;
@@ -369,13 +422,8 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
         return 0;
     }
 
-    if (surface_fmt != AV_PIX_FMT_CUDA && surface_fmt != AV_PIX_FMT_CUARRAY) {
-        av_log(avctx, AV_LOG_VERBOSE,
-               "ff_get_format returned %s, overriding to %s\n",
-               av_get_pix_fmt_name(surface_fmt),
-               av_get_pix_fmt_name(requested_hw_format));
-        surface_fmt = requested_hw_format;
-    }
+    surface_fmt = cuvid_apply_forced_output_format(avctx, ctx, surface_fmt,
+                                                    requested_hw_format);
 
     av_log(avctx, AV_LOG_VERBOSE, "Formats: Original: %s | HW: %s | SW: %s\n",
            av_get_pix_fmt_name(avctx->pix_fmt),
@@ -384,6 +432,8 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
 
     ctx->opaque_output = (surface_fmt == AV_PIX_FMT_CUARRAY);
     avctx->pix_fmt = surface_fmt;
+    internal_hw_format = ctx->opaque_output ? AV_PIX_FMT_CUARRAY
+                                            : AV_PIX_FMT_CUDA;
 
     if (ctx->opaque_output) {
         switch (avctx->sw_pix_fmt) {
@@ -442,6 +492,13 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
         avctx->framerate.den = format->frame_rate.denominator;
     }
 
+    if (ctx->cudecoder && ctx->opaque_output != old_opaque_output) {
+        av_log(avctx, AV_LOG_ERROR,
+               "Changing between opaque and non-opaque output is not supported\n");
+        ctx->internal_error = AVERROR(EINVAL);
+        return 0;
+    }
+
     if (ctx->cudecoder
             && avctx->coded_width == format->coded_width
             && avctx->coded_height == format->coded_height
@@ -453,22 +510,21 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
 
     if (ctx->cudecoder) {
         av_log(avctx, AV_LOG_TRACE, "Re-initializing decoder\n");
-        ctx->internal_error = CHECK_CU(ctx->cvdl->cuvidDestroyDecoder(ctx->cudecoder));
+        ctx->internal_error = cuvid_destroy_decoder(avctx);
         if (ctx->internal_error < 0)
             return 0;
-        ctx->cudecoder = NULL;
     }
 
     if (hwframe_ctx->pool && (
             hwframe_ctx->width < avctx->width ||
             hwframe_ctx->height < avctx->height ||
-            (hwframe_ctx->format != AV_PIX_FMT_CUDA && hwframe_ctx->format != AV_PIX_FMT_CUARRAY) ||
+            hwframe_ctx->format != internal_hw_format ||
             hwframe_ctx->sw_format != avctx->sw_pix_fmt)) {
         av_log(avctx, AV_LOG_ERROR, "AVHWFramesContext is already initialized with incompatible parameters\n");
         av_log(avctx, AV_LOG_DEBUG, "width: %d <-> %d\n", hwframe_ctx->width, avctx->width);
         av_log(avctx, AV_LOG_DEBUG, "height: %d <-> %d\n", hwframe_ctx->height, avctx->height);
         av_log(avctx, AV_LOG_DEBUG, "format: %s <-> %s\n", av_get_pix_fmt_name(hwframe_ctx->format),
-               av_get_pix_fmt_name(avctx->pix_fmt));
+               av_get_pix_fmt_name(internal_hw_format));
         av_log(avctx, AV_LOG_DEBUG, "sw_format: %s <-> %s\n",
                av_get_pix_fmt_name(hwframe_ctx->sw_format), av_get_pix_fmt_name(avctx->sw_pix_fmt));
         ctx->internal_error = AVERROR(EINVAL);
@@ -581,68 +637,55 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
 
         ff_nvdec_fill_cuarray_desc(&arr_desc, avctx, cuinfo.OutputFormat);
 
-        if (ctx->cuarray_surfaces) {
-            if (ctx->decoder_cleanup) {
-                ctx->decoder_cleanup->cuarray_surfaces = NULL;
-                ctx->decoder_cleanup->cuarray_num_surfaces = 0;
-                ctx->decoder_cleanup->cudecoder = NULL;
-                ctx->decoder_cleanup = NULL;
-            }
-            for (i = 0; i < ctx->cuarray_num_surfaces; i++)
-                ctx->cudl->cuArrayDestroy(ctx->cuarray_surfaces[i]);
-            av_freep(&ctx->cuarray_surfaces);
-            av_buffer_unref(&ctx->surface_in_use_ref);
-            ctx->surface_in_use = NULL;
-        }
-        ctx->cuarray_num_surfaces = ctx->nb_surfaces;
-        ctx->cuarray_surfaces = av_calloc(ctx->cuarray_num_surfaces, sizeof(CUarray));
+        ctx->cuarray_surfaces = av_calloc(ctx->nb_surfaces, sizeof(CUarray));
         if (!ctx->cuarray_surfaces) {
             ctx->internal_error = AVERROR(ENOMEM);
             return 0;
         }
         {
-            atomic_int *flags = av_calloc(ctx->cuarray_num_surfaces, sizeof(*flags));
+            atomic_int *flags = av_calloc(ctx->nb_surfaces, sizeof(*flags));
             CuvidDecoderCleanup *cleanup = NULL;
             if (!flags) {
                 ctx->internal_error = AVERROR(ENOMEM);
                 return 0;
             }
             if (ctx->zero_copy) {
+                int err = AVERROR(ENOMEM);
                 cleanup = av_mallocz(sizeof(*cleanup));
-                if (!cleanup) {
-                    av_free((void *)flags);
-                    ctx->internal_error = AVERROR(ENOMEM);
+                if (cleanup) {
+                    cleanup->hwdevice = av_buffer_ref(ctx->hwdevice);
+                    if (cleanup->hwdevice)
+                        err = cuvid_load_functions(&cleanup->cvdl, avctx);
+                }
+                if (err < 0) {
+                    cuvid_decoder_cleanup_free(cleanup, (uint8_t *)flags);
+                    ctx->internal_error = err;
                     return 0;
                 }
-                ctx->decoder_cleanup = cleanup;
             }
             ctx->surface_in_use_ref = av_buffer_create(
-                (uint8_t *)flags, ctx->cuarray_num_surfaces * sizeof(*flags),
+                (uint8_t *)flags, ctx->nb_surfaces * sizeof(*flags),
                 cleanup ? cuvid_decoder_cleanup_free : NULL,
                 cleanup, 0);
             if (!ctx->surface_in_use_ref) {
-                av_free((void *)flags);
-                av_free(cleanup);
-                ctx->decoder_cleanup = NULL;
+                cuvid_decoder_cleanup_free(cleanup, (uint8_t *)flags);
                 ctx->internal_error = AVERROR(ENOMEM);
                 return 0;
             }
+            ctx->decoder_cleanup = cleanup;
             ctx->surface_in_use = flags;
         }
 
-        for (i = 0; i < ctx->cuarray_num_surfaces; i++) {
+        for (i = 0; i < ctx->nb_surfaces; i++) {
             ctx->internal_error = CHECK_CU(ctx->cudl->cuArray3DCreate(
                 &ctx->cuarray_surfaces[i], &arr_desc));
             if (ctx->internal_error < 0) {
-                for (int j = 0; j < i; j++)
-                    ctx->cudl->cuArrayDestroy(ctx->cuarray_surfaces[j]);
-                av_freep(&ctx->cuarray_surfaces);
-                av_buffer_unref(&ctx->surface_in_use_ref);
-                ctx->surface_in_use = NULL;
-                ctx->cuarray_num_surfaces = 0;
+                ctx->cuarray_num_surfaces = i;
+                cuvid_destroy_decoder(avctx);
                 return 0;
             }
         }
+        ctx->cuarray_num_surfaces = ctx->nb_surfaces;
 
         {
             AVHWDeviceContext *dev_ctx =
@@ -669,17 +712,11 @@ static int CUDAAPI cuvid_handle_video_sequence(void *opaque, CUVIDEOFORMAT* form
         CHECK_CU(ctx->cudl->cuCtxPopCurrent(&dummy));
         if (ctx->internal_error < 0)
             return 0;
-
-        if (ctx->decoder_cleanup) {
-            ctx->decoder_cleanup->cudecoder = ctx->cudecoder;
-            ctx->decoder_cleanup->cuarray_surfaces = ctx->cuarray_surfaces;
-            ctx->decoder_cleanup->cuarray_num_surfaces = ctx->cuarray_num_surfaces;
-        }
     }
 #endif
 
     if (!hwframe_ctx->pool) {
-        hwframe_ctx->format    = avctx->pix_fmt;
+        hwframe_ctx->format    = internal_hw_format;
         hwframe_ctx->sw_format = avctx->sw_pix_fmt;
         hwframe_ctx->width     = avctx->width;
         hwframe_ctx->height    = avctx->height;
@@ -887,7 +924,8 @@ static int cuvid_output_frame(AVCodecContext *avctx, AVFrame *frame)
                 return ret;
         }
 
-        if (!cuvid_is_buffer_full(avctx)) {
+        // Consume queued output before parsing can reuse its decode surfaces.
+        if (!av_fifo_can_read(ctx->frame_queue) && !cuvid_is_buffer_full(avctx)) {
             AVPacket *const pkt = ctx->pkt;
             ret = ff_decode_get_packet(avctx, pkt);
             if (ret < 0 && ret != AVERROR_EOF)
@@ -1226,34 +1264,7 @@ static av_cold int cuvid_decode_end(AVCodecContext *avctx)
 
         if (ctx->cuparser)
             ctx->cvdl->cuvidDestroyVideoParser(ctx->cuparser);
-#ifdef NVDEC_HAVE_OPAQUE_OUTPUT_SUPPORT
-        if (ctx->decoder_cleanup) {
-            ctx->decoder_cleanup->hwdevice = av_buffer_ref(ctx->hwdevice);
-            ctx->decoder_cleanup->cvdl = ctx->cvdl;
-            ctx->cvdl = NULL;
-            ctx->cudecoder = NULL;
-            ctx->cuarray_surfaces = NULL;
-            ctx->cuarray_num_surfaces = 0;
-            av_buffer_unref(&ctx->surface_in_use_ref);
-            ctx->surface_in_use = NULL;
-            ctx->decoder_cleanup = NULL;
-        } else
-#endif
-        {
-            if (ctx->cudecoder)
-                ctx->cvdl->cuvidDestroyDecoder(ctx->cudecoder);
-
-#ifdef NVDEC_HAVE_OPAQUE_OUTPUT_SUPPORT
-            if (ctx->cuarray_surfaces) {
-                for (int i = 0; i < ctx->cuarray_num_surfaces; i++)
-                    ctx->cudl->cuArrayDestroy(ctx->cuarray_surfaces[i]);
-                av_freep(&ctx->cuarray_surfaces);
-                av_buffer_unref(&ctx->surface_in_use_ref);
-                ctx->surface_in_use = NULL;
-                ctx->cuarray_num_surfaces = 0;
-            }
-#endif
-        }
+        cuvid_destroy_decoder(avctx);
 
         ctx->cudl->cuCtxPopCurrent(&dummy);
     }
@@ -1433,13 +1444,8 @@ static av_cold int cuvid_decode_init(AVCodecContext *avctx)
         return ret;
     }
 
-    if (ret != AV_PIX_FMT_CUDA && ret != AV_PIX_FMT_CUARRAY) {
-        av_log(avctx, AV_LOG_VERBOSE,
-               "ff_get_format returned %s, overriding to %s\n",
-               av_get_pix_fmt_name(ret),
-               av_get_pix_fmt_name(requested_hw_format));
-        ret = requested_hw_format;
-    }
+    ret = cuvid_apply_forced_output_format(avctx, ctx, ret,
+                                           requested_hw_format);
 
     ctx->opaque_output = (ret == AV_PIX_FMT_CUARRAY);
     avctx->pix_fmt = ret;
@@ -1709,10 +1715,7 @@ static void cuvid_flush(AVCodecContext *avctx)
 
     av_fifo_reset2(ctx->frame_queue);
 
-    if (ctx->cudecoder) {
-        ctx->cvdl->cuvidDestroyDecoder(ctx->cudecoder);
-        ctx->cudecoder = NULL;
-    }
+    cuvid_destroy_decoder(avctx);
 
     if (ctx->cuparser) {
         ctx->cvdl->cuvidDestroyVideoParser(ctx->cuparser);
@@ -1756,7 +1759,8 @@ static const AVOption options[] = {
     { "drop_second_field", "Drop second field when deinterlacing", OFFSET(drop_second_field), AV_OPT_TYPE_BOOL, { .i64 = 0 }, 0, 1, VD },
     { "crop",     "Crop (top)x(bottom)x(left)x(right)", OFFSET(crop_expr), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, VD },
     { "resize",   "Resize (width)x(height)", OFFSET(resize_expr), AV_OPT_TYPE_STRING, { .str = NULL }, 0, 0, VD },
-    { "output_format", "Hardware output format", OFFSET(output_format), AV_OPT_TYPE_INT, { .i64 = AV_PIX_FMT_CUDA }, 0, INT_MAX, VD, .unit = "output_format" },
+    { "output_format", "Hardware output format", OFFSET(output_format), AV_OPT_TYPE_INT, { .i64 = AV_PIX_FMT_NONE }, AV_PIX_FMT_NONE, INT_MAX, VD, .unit = "output_format" },
+    { "auto",    "Honor the application output format selection", 0, AV_OPT_TYPE_CONST, { .i64 = AV_PIX_FMT_NONE }, 0, 0, VD, .unit = "output_format" },
     { "cuda",    "CUDA pitch-linear output",          0, AV_OPT_TYPE_CONST, { .i64 = AV_PIX_FMT_CUDA },    0, 0, VD, .unit = "output_format" },
 #ifdef NVDEC_HAVE_OPAQUE_OUTPUT_SUPPORT
     { "cuarray", "CUDA block-linear opaque output",   0, AV_OPT_TYPE_CONST, { .i64 = AV_PIX_FMT_CUARRAY }, 0, 0, VD, .unit = "output_format" },
